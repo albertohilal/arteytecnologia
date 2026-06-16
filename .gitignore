@@ -1,0 +1,41 @@
+# No versionar Moodle completo local
+/moodle/*
+!/moodle/.gitkeep
+
+# No versionar moodledata
+/moodledata/*
+!/moodledata/.gitkeep
+
+# No versionar dumps de base de datos
+/db-dumps/*
+!/db-dumps/.gitkeep
+
+# Backups y comprimidos
+*.sql
+*.sql.gz
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.bak
+
+# Configuración sensible
+config.php
+.env
+*.env
+
+# Cachés y temporales Moodle
+cache/
+localcache/
+temp/
+sessions/
+trashdir/
+
+# Logs
+*.log
+
+# Sistema / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
