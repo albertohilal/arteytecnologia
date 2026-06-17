@@ -23,7 +23,7 @@ services:
       - "8080:80"
     volumes:
       - ./moodle:/var/www/html
-      - ./moodledata:/var/moodledata
+      - moodledata:/var/moodledata
 
   phpmyadmin:
     image: phpmyadmin/phpmyadmin
@@ -40,3 +40,4 @@ services:
 
 volumes:
   dbdata:
+  moodledata:
