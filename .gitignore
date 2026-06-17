@@ -1,6 +1,9 @@
 # No versionar Moodle completo local
 /moodle/*
 !/moodle/.gitkeep
+!/moodle/reportes/
+/moodle/reportes/*
+!/moodle/reportes/reporteTPporCurso.php
 
 # No versionar moodledata
 /moodledata/*
