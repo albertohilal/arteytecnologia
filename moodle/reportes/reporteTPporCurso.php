@@ -8,13 +8,65 @@ global $DB, $CFG, $PAGE, $USER;
 
 require_once($CFG->libdir . '/excellib.class.php');
 require_once($CFG->libdir . '/gradelib.php');
+require_once($CFG->dirroot . '/mod/forum/lib.php');
 
 // Parámetros.
 $courseid = optional_param('courseid', 0, PARAM_INT);
 $download = optional_param('download', '', PARAM_TEXT);
 $saved = optional_param('saved', 0, PARAM_INT);
+$setupdone = optional_param('setupdone', 0, PARAM_INT);
 $gradeerror = optional_param('gradeerror', '', PARAM_ALPHANUMEXT);
 $action = optional_param('action', '', PARAM_ALPHA);
+
+/**
+ * Devuelve permisos operativos del usuario para este reporte.
+ *
+ * Reglas de seguridad:
+ * - Si el usuario tiene rol student en el contexto del curso y no tiene rol docente/manager,
+ *   queda forzado a modo lectura.
+ * - Solo editingteacher, teacher, manager o siteadmin pueden editar calificaciones.
+ * - No usamos moodle/grade:viewall para habilitar edición visual, porque puede estar
+ *   demasiado amplio en algunos sitios.
+ */
+function reporte_tp_role_flags(context_course $context, int $userid): array {
+    $courseroles = get_user_roles($context, $userid, false);
+    $inheritedroles = get_user_roles($context, $userid, true);
+
+    $graderroles = ['manager', 'editingteacher', 'teacher'];
+
+    $hasstudentrole = false;
+    $hascoursergraderrole = false;
+    $hasinheritedmanagerrole = false;
+
+    foreach ($courseroles as $role) {
+        if ($role->shortname === 'student') {
+            $hasstudentrole = true;
+        }
+
+        if (in_array($role->shortname, $graderroles, true)) {
+            $hascoursergraderrole = true;
+        }
+    }
+
+    foreach ($inheritedroles as $role) {
+        if ($role->shortname === 'manager') {
+            $hasinheritedmanagerrole = true;
+        }
+    }
+
+    $issiteadmin = is_siteadmin($userid);
+    $hasgraderrole = $issiteadmin || $hascoursergraderrole || $hasinheritedmanagerrole;
+
+    // Si es solo estudiante del curso, nunca puede editar desde este reporte.
+    $isstudentonly = $hasstudentrole && !$hascoursergraderrole && !$hasinheritedmanagerrole && !$issiteadmin;
+
+    return [
+        'hasgraderrole' => $hasgraderrole,
+        'hasstudentrole' => $hasstudentrole,
+        'isstudentonly' => $isstudentonly,
+        'caneditreport' => $hasgraderrole && !$isstudentonly,
+    ];
+}
 
 // Configuración mínima de página.
 $pageparams = [];
@@ -29,6 +81,63 @@ $PAGE->set_url(new moodle_url('/reportes/reporteTPporCurso.php', $pageparams));
 $PAGE->set_context(context_system::instance());
 $PAGE->set_title('Participación en Foros TP');
 $PAGE->set_heading('Participación en Foros TP');
+
+// Habilitar calificación oficial para todos los foros TP-* del curso seleccionado.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'setupgrades') {
+    require_sesskey();
+
+    $postcourseid = required_param('courseid', PARAM_INT);
+
+    $course = $DB->get_record('course', ['id' => $postcourseid], '*', MUST_EXIST);
+    require_login($course);
+
+    $coursecontext = context_course::instance($course->id);
+    $roleflags = reporte_tp_role_flags($coursecontext, (int)$USER->id);
+
+    // Solo docentes, managers o administradores pueden crear/actualizar ítems de calificación.
+    if (!$roleflags['caneditreport']) {
+        redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+            'courseid' => $postcourseid,
+            'gradeerror' => 'nopermission'
+        ]));
+    }
+
+    require_capability('moodle/course:manageactivities', $coursecontext);
+
+    $tpforums = $DB->get_records_sql("\n        SELECT f.*, cm.idnumber AS cmidnumber\n        FROM {forum} f\n        JOIN {course_modules} cm ON cm.instance = f.id\n        JOIN {modules} m ON m.id = cm.module\n        WHERE f.course = :courseid\n          AND f.name LIKE :prefix\n          AND m.name = :modname\n        ORDER BY f.name\n    ", [
+        'courseid' => $postcourseid,
+        'prefix' => 'TP-%',
+        'modname' => 'forum'
+    ]);
+
+    $updatedcount = 0;
+
+    foreach ($tpforums as $forum) {
+        if ((float)$forum->grade_forum !== 10.0 || (int)$forum->grade_forum_notify !== 0) {
+            $update = new stdClass();
+            $update->id = $forum->id;
+            $update->grade_forum = 10;
+            $update->grade_forum_notify = 0;
+
+            $DB->update_record('forum', $update);
+
+            $forum->grade_forum = 10;
+            $forum->grade_forum_notify = 0;
+
+            $updatedcount++;
+        }
+
+        // Crea o actualiza el ítem oficial en el libro de calificaciones.
+        forum_grade_item_update($forum);
+    }
+
+    rebuild_course_cache($course->id, true);
+
+    redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+        'courseid' => $postcourseid,
+        'setupdone' => $updatedcount
+    ]));
+}
 
 // Guardado rápido de calificación oficial del foro completo.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'savegrade') {
@@ -58,6 +167,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'savegrade') {
 
     $cm = get_coursemodule_from_instance('forum', $forum->id, $postcourseid, false, MUST_EXIST);
     $modulecontext = context_module::instance($cm->id);
+    $roleflags = reporte_tp_role_flags($coursecontext, (int)$USER->id);
+
+    // Protección real del backend: solo docentes, managers o administradores pueden calificar.
+    if (!$roleflags['caneditreport']) {
+        redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+            'courseid' => $postcourseid,
+            'gradeerror' => 'nopermission'
+        ]));
+    }
 
     require_capability('mod/forum:grade', $modulecontext);
 
@@ -69,19 +187,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'savegrade') {
         ]));
     }
 
-    $gradevalue = trim(str_replace(',', '.', $gradevalue));
+    $gradevalue = trim($gradevalue);
 
     if ($gradevalue === '') {
         $rawgrade = null;
-    } else if (!is_numeric($gradevalue)) {
+    } else if (!preg_match('/^\d+$/', $gradevalue)) {
         redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
             'courseid' => $postcourseid,
             'gradeerror' => 'invalid'
         ]));
     } else {
-        $rawgrade = (float)$gradevalue;
+        $rawgrade = (int)$gradevalue;
 
-        if ($rawgrade < 0 || $rawgrade > (float)$forum->grade_forum) {
+        if ($rawgrade < 0 || $rawgrade > (int)$forum->grade_forum) {
             redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
                 'courseid' => $postcourseid,
                 'gradeerror' => 'range'
@@ -130,60 +248,118 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'savegrade') {
 }
 
 // Obtener lista de cursos que tienen foros TP-*.
-$courses = $DB->get_records_sql("
-    SELECT DISTINCT c.id, c.shortname
-    FROM {course} c
-    JOIN {forum} f ON f.course = c.id
-    WHERE f.name LIKE :prefix
-    ORDER BY c.shortname
-", [
+$allcourses = $DB->get_records_sql("\n    SELECT DISTINCT c.id, c.shortname\n    FROM {course} c\n    JOIN {forum} f ON f.course = c.id\n    WHERE f.name LIKE :prefix\n    ORDER BY c.shortname\n", [
     'prefix' => 'TP-%'
 ]);
 
-// Si no viene courseid por URL, seleccionar el primer curso disponible.
+// Filtrar cursos disponibles para el usuario.
+// Docentes/administradores ven cursos donde pueden ver todas las calificaciones.
+// Estudiantes ven cursos donde están matriculados.
+$courses = [];
+foreach ($allcourses as $course) {
+    $context = context_course::instance($course->id);
+    $roleflags = reporte_tp_role_flags($context, (int)$USER->id);
+    $isenrolledincourse = is_enrolled($context, $USER, '', true);
+
+    if ($roleflags['caneditreport'] || $isenrolledincourse) {
+        $courses[$course->id] = $course;
+    }
+}
+
+// Si no viene courseid por URL, seleccionar el primer curso disponible para este usuario.
 if (!$courseid && !empty($courses)) {
     $firstcourse = reset($courses);
     $courseid = (int)$firstcourse->id;
 }
 
 $selected_course = null;
+$coursecontext = null;
 $forums = [];
 $students = [];
 $report_data = [];
 $forumgradevalues = [];
+$forumgradepermissions = [];
+$needsgradesetup = false;
+$ungradedforumcount = 0;
+$canmanageactivities = false;
+$canviewallgrades = false;
+$canviewownreport = false;
 
 if ($courseid) {
     $selected_course = $DB->get_record('course', ['id' => $courseid], '*', MUST_EXIST);
+    require_login($selected_course);
 
-    // Obtener foros TP-% para este curso.
-    $forums = $DB->get_records_sql("
-        SELECT id, name, course, grade_forum
-        FROM {forum}
-        WHERE course = :cid
-          AND name LIKE :prefix
-        ORDER BY name
-    ", [
-        'cid' => $courseid,
-        'prefix' => 'TP-%'
-    ]);
+    $coursecontext = context_course::instance($selected_course->id);
+    $PAGE->set_context($coursecontext);
 
-    // Obtener estudiantes con rol estudiante para este curso.
-    // En Moodle estándar, roleid = 5 suele ser estudiante.
-    $students = $DB->get_records_sql("
-        SELECT DISTINCT u.id, u.firstname, u.lastname
-        FROM {user} u
-        JOIN {role_assignments} ra ON ra.userid = u.id
-        JOIN {context} cx ON cx.id = ra.contextid
-        WHERE cx.contextlevel = :ctxlevel
-          AND cx.instanceid = :cid
-          AND ra.roleid = :studentrole
-          AND u.deleted = 0
-        ORDER BY u.lastname, u.firstname
-    ", [
-        'ctxlevel' => CONTEXT_COURSE,
-        'cid' => $courseid,
-        'studentrole' => 5
-    ]);
+    // Docentes, managers y administradores ven todas las filas. Estudiantes ven solo su propia fila.
+    $roleflags = reporte_tp_role_flags($coursecontext, (int)$USER->id);
+    $canviewallgrades = $roleflags['caneditreport'];
+    $canviewownreport = is_enrolled($coursecontext, $USER, '', true);
+
+    if (!$canviewallgrades && !$canviewownreport) {
+        require_login($selected_course);
+        print_error('nopermissions', 'error', '', 'ver este reporte');
+    }
+
+    $canmanageactivities = $roleflags['caneditreport'] && has_capability('moodle/course:manageactivities', $coursecontext);
+
+    // Obtener solo foros TP-% visibles en la página del curso.
+$forums = $DB->get_records_sql("
+    SELECT 
+        f.id,
+        f.name,
+        f.course,
+        f.grade_forum,
+        cm.id AS cmid
+    FROM {forum} f
+    JOIN {course_modules} cm 
+        ON cm.instance = f.id
+    JOIN {modules} m 
+        ON m.id = cm.module
+    JOIN {course_sections} cs
+        ON cs.id = cm.section
+    WHERE f.course = :cid
+      AND f.name LIKE :prefix
+      AND m.name = :modname
+      AND cm.course = f.course
+      AND cm.visible = 1
+      AND cm.visibleoncoursepage = 1
+      AND cm.deletioninprogress = 0
+      AND cs.course = f.course
+      AND cs.visible = 1
+      AND FIND_IN_SET(cm.id, cs.sequence) > 0
+    ORDER BY f.name
+", [
+    'cid' => $courseid,
+    'prefix' => 'TP-%',
+    'modname' => 'forum'
+]);
+
+    // Determinar permisos de calificación y si falta habilitar algún foro.
+    foreach ($forums as $forum) {
+        if (empty($forum->grade_forum) || (float)$forum->grade_forum <= 0) {
+            $needsgradesetup = true;
+            $ungradedforumcount++;
+        }
+
+        $modulecontext = context_module::instance($forum->cmid);
+        $forumgradepermissions[$forum->id] = $roleflags['caneditreport'] && has_capability('mod/forum:grade', $modulecontext);
+    }
+
+    // Obtener estudiantes.
+    if ($canviewallgrades) {
+        // En Moodle estándar, roleid = 5 suele ser estudiante.
+        $students = $DB->get_records_sql("\n            SELECT DISTINCT u.id, u.firstname, u.lastname\n            FROM {user} u\n            JOIN {role_assignments} ra ON ra.userid = u.id\n            JOIN {context} cx ON cx.id = ra.contextid\n            WHERE cx.contextlevel = :ctxlevel\n              AND cx.instanceid = :cid\n              AND ra.roleid = :studentrole\n              AND u.deleted = 0\n            ORDER BY u.lastname, u.firstname\n        ", [
+            'ctxlevel' => CONTEXT_COURSE,
+            'cid' => $courseid,
+            'studentrole' => 5
+        ]);
+    } else {
+        $students = $DB->get_records_sql("\n            SELECT u.id, u.firstname, u.lastname\n            FROM {user} u\n            WHERE u.id = :userid\n              AND u.deleted = 0\n        ", [
+            'userid' => $USER->id
+        ]);
+    }
 
     // Obtener calificaciones actuales del Whole forum grading.
     $studentids = array_map('intval', array_keys($students));
@@ -214,14 +390,7 @@ if ($courseid) {
         foreach ($forums as $forum) {
             $links = [];
 
-            $msgs = $DB->get_records_sql("
-                SELECT fp.id, fp.message
-                FROM {forum_discussions} fd
-                JOIN {forum_posts} fp ON fp.discussion = fd.id
-                WHERE fd.forum = :fid
-                  AND fp.userid = :uid
-                ORDER BY fp.created ASC
-            ", [
+            $msgs = $DB->get_records_sql("\n                SELECT fp.id, fp.message\n                FROM {forum_discussions} fd\n                JOIN {forum_posts} fp ON fp.discussion = fd.id\n                WHERE fd.forum = :fid\n                  AND fp.userid = :uid\n                ORDER BY fp.created ASC\n            ", [
                 'fid' => $forum->id,
                 'uid' => $student->id
             ]);
@@ -244,53 +413,62 @@ if ($courseid) {
     }
 }
 
-// Exportación a Excel.
-if ($download === 'excel' && !empty($report_data)) {
-    $filename = 'reporteTP_' . $selected_course->shortname . '_' . date('Ymd_His') . '.xlsx';
-
-    $workbook = new MoodleExcelWorkbook('-');
-    $workbook->send($filename);
-    $worksheet = $workbook->add_worksheet('Participación');
-
-    $formattext = $workbook->add_format(['bold' => 0]);
-    $formatlink = $workbook->add_format([
-        'colour' => 'blue',
-        'underline' => 1
-    ]);
-
-    $rownum = 0;
-    $col = 0;
-
-    $worksheet->write_string($rownum, $col++, 'Apellido', $formattext);
-    $worksheet->write_string($rownum, $col++, 'Nombre', $formattext);
-
-    foreach ($forums as $forum) {
-        $worksheet->write_string($rownum, $col++, $forum->name, $formattext);
+// Exportación a Excel. Solo docentes/administradores.
+if ($download === 'excel') {
+    if (!$canviewallgrades) {
+        redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+            'courseid' => $courseid,
+            'gradeerror' => 'nopermission'
+        ]));
     }
 
-    foreach ($report_data as $data) {
-        $rownum++;
+    if (!empty($report_data)) {
+        $filename = 'reporteTP_' . $selected_course->shortname . '_' . date('Ymd_His') . '.xlsx';
+
+        $workbook = new MoodleExcelWorkbook('-');
+        $workbook->send($filename);
+        $worksheet = $workbook->add_worksheet('Participación');
+
+        $formattext = $workbook->add_format(['bold' => 0]);
+        $formatlink = $workbook->add_format([
+            'colour' => 'blue',
+            'underline' => 1
+        ]);
+
+        $rownum = 0;
         $col = 0;
 
-        $worksheet->write_string($rownum, $col++, $data['apellido'], $formattext);
-        $worksheet->write_string($rownum, $col++, $data['nombre'], $formattext);
+        $worksheet->write_string($rownum, $col++, 'Apellido', $formattext);
+        $worksheet->write_string($rownum, $col++, 'Nombre', $formattext);
 
         foreach ($forums as $forum) {
-            $links = $data['links'][$forum->id] ?? [];
-
-            if (!empty($links)) {
-                $text = implode("\n", $links);
-                $worksheet->write_url($rownum, $col, $links[0], $formatlink, $text);
-            } else {
-                $worksheet->write_string($rownum, $col, '', $formattext);
-            }
-
-            $col++;
+            $worksheet->write_string($rownum, $col++, $forum->name, $formattext);
         }
-    }
 
-    $workbook->close();
-    exit;
+        foreach ($report_data as $data) {
+            $rownum++;
+            $col = 0;
+
+            $worksheet->write_string($rownum, $col++, $data['apellido'], $formattext);
+            $worksheet->write_string($rownum, $col++, $data['nombre'], $formattext);
+
+            foreach ($forums as $forum) {
+                $links = $data['links'][$forum->id] ?? [];
+
+                if (!empty($links)) {
+                    $text = implode("\n", $links);
+                    $worksheet->write_url($rownum, $col, $links[0], $formatlink, $text);
+                } else {
+                    $worksheet->write_string($rownum, $col, '', $formattext);
+                }
+
+                $col++;
+            }
+        }
+
+        $workbook->close();
+        exit;
+    }
 }
 
 // Opciones del selector.
@@ -303,6 +481,7 @@ foreach ($courses as $course) {
 $currentuser = fullname($USER);
 ?>
 <!DOCTYPE html>
+<!-- reporteTPporCurso: estudiante solo lectura / docente edicion - version segura -->
 <html lang="es">
 <head>
     <meta charset="utf-8">
@@ -441,6 +620,20 @@ $currentuser = fullname($USER);
             background: #256f2e;
         }
 
+        .btn-warning {
+            color: #fff;
+            background: #d88900;
+            border-color: #d88900;
+        }
+
+        .btn-warning:hover {
+            background: #b87300;
+        }
+
+        .setup-grades-form {
+            margin-top: 10px;
+        }
+
         .notice {
             margin-top: 12px;
             padding: 10px 12px;
@@ -528,7 +721,6 @@ $currentuser = fullname($USER);
             max-width: 260px;
         }
 
-        /* Columnas fijas: Apellido */
         .report-table th:nth-child(1),
         .report-table td:nth-child(1) {
             position: sticky;
@@ -536,7 +728,6 @@ $currentuser = fullname($USER);
             z-index: 10;
         }
 
-        /* Columnas fijas: Nombre */
         .report-table th:nth-child(2),
         .report-table td:nth-child(2) {
             position: sticky;
@@ -545,7 +736,6 @@ $currentuser = fullname($USER);
             box-shadow: 3px 0 4px rgba(0, 0, 0, 0.12);
         }
 
-        /* Encabezados fijos arriba y a la izquierda */
         .report-table thead th:nth-child(1),
         .report-table thead th:nth-child(2) {
             top: 0;
@@ -553,7 +743,6 @@ $currentuser = fullname($USER);
             background: #fff;
         }
 
-        /* Fondo real para las columnas fijas según fila impar/par */
         .report-table tbody tr:nth-child(odd) td:nth-child(1),
         .report-table tbody tr:nth-child(odd) td:nth-child(2) {
             background: #9fe3f1;
@@ -616,6 +805,13 @@ $currentuser = fullname($USER);
         .grade-max {
             font-size: 12px;
             color: #666;
+        }
+
+        .grade-readonly {
+            margin-top: 6px;
+            font-size: 13px;
+            color: #333;
+            font-weight: 600;
         }
 
         .grade-disabled {
@@ -723,7 +919,7 @@ $currentuser = fullname($USER);
                 <?php endforeach; ?>
             </select>
 
-            <?php if ($selected_course): ?>
+            <?php if ($selected_course && $canviewallgrades): ?>
                 <a class="btn btn-success"
                    href="<?php echo (new moodle_url('/reportes/reporteTPporCurso.php', [
                        'courseid' => $courseid,
@@ -734,15 +930,37 @@ $currentuser = fullname($USER);
             <?php endif; ?>
         </form>
 
+        <?php if ($selected_course && $needsgradesetup && $canmanageactivities): ?>
+            <form method="post"
+                  class="controls setup-grades-form"
+                  action="<?php echo (new moodle_url('/reportes/reporteTPporCurso.php'))->out(false); ?>">
+                <input type="hidden" name="sesskey" value="<?php echo sesskey(); ?>">
+                <input type="hidden" name="action" value="setupgrades">
+                <input type="hidden" name="courseid" value="<?php echo (int)$courseid; ?>">
+
+                <button type="submit"
+                        class="btn btn-warning"
+                        onclick="return confirm('Esto habilitará calificación sobre 10 en todos los foros TP de este curso. ¿Continuar?');">
+                    Habilitar calificaciones TP en este curso
+                </button>
+            </form>
+        <?php endif; ?>
+
         <?php if ($saved): ?>
             <div class="notice notice-success">
                 Calificación guardada correctamente.
             </div>
         <?php endif; ?>
 
+        <?php if ($setupdone): ?>
+            <div class="notice notice-success">
+                Se habilitó la calificación oficial en <?php echo (int)$setupdone; ?> foro(s) TP del curso.
+            </div>
+        <?php endif; ?>
+
         <?php if ($gradeerror): ?>
             <div class="notice notice-error">
-                No se pudo guardar la calificación. Revisá que el foro tenga habilitada la calificación del foro completo y que la nota esté dentro del rango permitido.
+                No se pudo guardar la calificación. Revisá que tengas permisos para calificar, que el foro tenga habilitada la calificación del foro completo y que la nota sea un número entero dentro del rango permitido.
             </div>
         <?php endif; ?>
     </section>
@@ -750,7 +968,7 @@ $currentuser = fullname($USER);
     <?php if (empty($courses)): ?>
 
         <div class="empty-message">
-            No se encontraron cursos con foros cuyo nombre empiece con <strong>TP-</strong>.
+            No hay cursos con foros <strong>TP-</strong> disponibles para tu usuario.
         </div>
 
     <?php elseif ($selected_course && empty($forums)): ?>
@@ -787,10 +1005,11 @@ $currentuser = fullname($USER);
                                     $gradevalue = '';
 
                                     if ($currentgrade !== null && $currentgrade !== false) {
-                                        $gradevalue = format_float($currentgrade, 2, false);
+                                        $gradevalue = format_float($currentgrade, 0, false);
                                     }
 
                                     $isgradable = !empty($forum->grade_forum) && (float)$forum->grade_forum > 0;
+                                    $cangradeforum = $canviewallgrades && !empty($forumgradepermissions[$forum->id]);
                                 ?>
 
                                 <td class="forum-cell">
@@ -804,7 +1023,7 @@ $currentuser = fullname($USER);
                                         <span class="no-links">Sin enlace</span>
                                     <?php endif; ?>
 
-                                    <?php if ($isgradable): ?>
+                                    <?php if ($isgradable && $cangradeforum): ?>
                                         <form method="post"
                                               class="grade-form"
                                               action="<?php echo (new moodle_url('/reportes/reporteTPporCurso.php'))->out(false); ?>">
@@ -818,14 +1037,20 @@ $currentuser = fullname($USER);
                                                    class="grade-input"
                                                    name="grade"
                                                    min="0"
-                                                   max="<?php echo s($forum->grade_forum); ?>"
-                                                   step="0.1"
+                                                   max="<?php echo (int)$forum->grade_forum; ?>"
+                                                   step="1"
+                                                   inputmode="numeric"
+                                                   pattern="[0-9]*"
                                                    value="<?php echo s($gradevalue); ?>">
 
                                             <button type="submit" class="grade-save">Guardar</button>
 
-                                            <span class="grade-max">/ <?php echo s($forum->grade_forum); ?></span>
+                                            <span class="grade-max">/ <?php echo (int)$forum->grade_forum; ?></span>
                                         </form>
+                                    <?php elseif ($isgradable): ?>
+                                        <div class="grade-readonly">
+                                            Nota: <?php echo ($gradevalue !== '') ? s($gradevalue) : '-'; ?> / <?php echo (int)$forum->grade_forum; ?>
+                                        </div>
                                     <?php else: ?>
                                         <div class="grade-disabled">Foro no calificable</div>
                                     <?php endif; ?>
