@@ -15,6 +15,7 @@ $courseid = optional_param('courseid', 0, PARAM_INT);
 $download = optional_param('download', '', PARAM_TEXT);
 $saved = optional_param('saved', 0, PARAM_INT);
 $setupdone = optional_param('setupdone', 0, PARAM_INT);
+$periodsaved = optional_param('periodsaved', 0, PARAM_INT);
 $gradeerror = optional_param('gradeerror', '', PARAM_ALPHANUMEXT);
 $action = optional_param('action', '', PARAM_ALPHA);
 
@@ -68,6 +69,306 @@ function reporte_tp_role_flags(context_course $context, int $userid): array {
     ];
 }
 
+// ===========================================================================
+// UNIT-1: infraestructura nueva TP-CEE-NN (clasificación canónica).
+// Estas funciones son PURAS (side-effect-free): no consultan ni modifican
+// base de datos, gradebook, grade_forum, forum_grades ni grade_items.
+// La integración de consumidores runtime corresponde a UNIT-3.
+// ===========================================================================
+
+/**
+ * Parsea un identificador de TP según la gramática canónica TP-CEE-NN.
+ *
+ * Gramática (case-insensitive): ^TP-([0-9]{3})-([0-9]{2})(?:\s*-\s*.*)?$
+ *   grupo 1 = CEE (3 dígitos): C (período: 0|2) + EE (Encuentro, 2 dígitos).
+ *   grupo 2 = NN (ordinal del TP dentro del Encuentro, 2 dígitos).
+ *
+ * Reglas de período:
+ *   C = 0 → PERIOD_1 (period = 1), EE permitido 01..07.
+ *   C = 2 → PERIOD_2 (period = 2), EE permitido 08..24.
+ *   C ∉ {0,2}          → encounter_out_of_period.
+ *   EE fuera del rango del período codificado → encounter_out_of_period.
+ *
+ * Regla de ordinal:
+ *   NN canónico = 01..99. NN = 00 → invalid_format.
+ *
+ * @param string $name Nombre de la actividad (p. ej. "TP-208-01 - descripción").
+ * @return array [ 'valid' => bool, 'error' => string|null, 'cee' => string|null,
+ *                 'period' => int|null, 'encounter_number' => int|null,
+ *                 'tp_number_within_encounter' => int|null ]
+ */
+function parse_tp_identifier(string $name): array {
+    if (!preg_match('/^TP-([0-9]{3})-([0-9]{2})(?:\s*-\s*.*)?$/i', $name, $m)) {
+        return [
+            'valid' => false,
+            'error' => 'invalid_format',
+            'cee' => null,
+            'period' => null,
+            'encounter_number' => null,
+            'tp_number_within_encounter' => null,
+        ];
+    }
+
+    $cee = $m[1];
+    $perioddigit = $cee[0];
+    $encounter = (int)substr($cee, 1, 2);
+    $ordinal = (int)$m[2];
+
+    // NN canónico = 01..99. El ordinal 00 no es un TP válido (SPECIFICATION:
+    // "NN empieza canónicamente en 01"). La gramática ya limita NN a 2 dígitos,
+    // por lo que aquí solo se rechaza el 00. Se reutiliza la categoría pública
+    // invalid_format, que comprende también NN fuera del dominio 01..99.
+    if ($ordinal < 1) {
+        return [
+            'valid' => false,
+            'error' => 'invalid_format',
+            'cee' => $cee,
+            'period' => null,
+            'encounter_number' => $encounter,
+            'tp_number_within_encounter' => $ordinal,
+        ];
+    }
+
+    if ($perioddigit === '0') {
+        $period = 1;
+        $inrange = ($encounter >= 1 && $encounter <= 7);
+    } else if ($perioddigit === '2') {
+        $period = 2;
+        $inrange = ($encounter >= 8 && $encounter <= 24);
+    } else {
+        // C fuera de {0,2}: sin período válido.
+        return [
+            'valid' => false,
+            'error' => 'encounter_out_of_period',
+            'cee' => $cee,
+            'period' => null,
+            'encounter_number' => $encounter,
+            'tp_number_within_encounter' => $ordinal,
+        ];
+    }
+
+    if (!$inrange) {
+        // EE fuera del rango del período codificado en C.
+        return [
+            'valid' => false,
+            'error' => 'encounter_out_of_period',
+            'cee' => $cee,
+            'period' => $period,
+            'encounter_number' => $encounter,
+            'tp_number_within_encounter' => $ordinal,
+        ];
+    }
+
+    return [
+        'valid' => true,
+        'error' => null,
+        'cee' => $cee,
+        'period' => $period,
+        'encounter_number' => $encounter,
+        'tp_number_within_encounter' => $ordinal,
+    ];
+}
+
+/**
+ * Clasificación canónica VALID_GRADED_TP (definición única del DESIGN).
+ *
+ * VALID_GRADED_TP(forum) :=
+ *       actividad foro (recibida como $forum)
+ *   AND forum.type != 'news'
+ *   AND parse_tp_identifier(forum.name).valid == true
+ *
+ * Pura / side-effect-free: opera solo sobre el objeto recibido. No consulta ni
+ * modifica base de datos; no cambia grade_forum, no crea grade_items, no escribe
+ * forum_grades/grade_grades, no ejecuta setupgrades, renombres, cache ni regrade.
+ *
+ * @param object $forum Registro de foro (stdClass) con al menos ->type y ->name.
+ * @return bool
+ */
+function reporte_tp_is_valid_graded_tp(object $forum): bool {
+    if (isset($forum->type) && $forum->type === 'news') {
+        return false;
+    }
+
+    if (empty($forum->name) || !is_string($forum->name)) {
+        return false;
+    }
+
+    return parse_tp_identifier($forum->name)['valid'];
+}
+
+// Período (1|2) derivado del parser canónico, o null si no es VALID_GRADED_TP.
+function reporte_tp_get_period_of_forum(object $forum): ?int {
+    if (!reporte_tp_is_valid_graded_tp($forum)) {
+        return null;
+    }
+
+    $parsed = parse_tp_identifier($forum->name);
+
+    return $parsed['period'] ?? null;
+}
+
+// Foros de un período: VALID_GRADED_TP + período desde el parser + grade_forum === 10.0.
+// Cada TP permanece independiente (no se agrupa por Encuentro).
+function reporte_tp_collect_period_forums(array $forums, int $period): array {
+    $collected = [];
+    foreach ($forums as $forum) {
+        if (!reporte_tp_is_valid_graded_tp($forum)) {
+            continue;
+        }
+        if ((float)$forum->grade_forum !== 10.0) {
+            continue;
+        }
+        if (reporte_tp_get_period_of_forum($forum) !== $period) {
+            continue;
+        }
+        $collected[$forum->id] = $forum;
+    }
+
+    return $collected;
+}
+
+// Nota de período 0-10: redondeo half-up de (entregados / total) * 10.
+function reporte_tp_compute_period_grade(int $delivered, int $total): int {
+    if ($total === 0) {
+        return 0;
+    }
+
+    return (int)round(($delivered / $total) * 10);
+}
+
+// Conteo de entregados/total y nota del período por estudiante. Entregado = calificación de foro completo >= 4.
+function reporte_tp_compute_period_grades(array $students, array $periodforums, array $forumgradevalues): array {
+    $result = [];
+    foreach ($students as $student) {
+        $uid = (int)$student->id;
+        $delivered = 0;
+        $total = count($periodforums);
+
+        foreach ($periodforums as $fid => $forum) {
+            if (($forumgradevalues[$fid][$uid] ?? 0) >= 4) {
+                $delivered++;
+            }
+        }
+
+        $result[$uid] = [
+            'delivered' => $delivered,
+            'total' => $total,
+            'grade' => reporte_tp_compute_period_grade($delivered, $total),
+        ];
+    }
+
+    return $result;
+}
+
+// Encuentra (o crea) el grade_item manual del período por idnumber periodo{period}-{courseid}.
+function reporte_tp_ensure_period_grade_item(int $courseid, int $period): grade_item {
+    global $DB;
+
+    $idnumber = "periodo{$period}-{$courseid}";
+    $existing = $DB->get_record('grade_items', ['courseid' => $courseid, 'idnumber' => $idnumber]);
+
+    if ($existing) {
+        $item = new grade_item($existing);
+
+        if ((float)$item->grademax != 10 || (float)$item->grademin != 0 || $item->itemname !== "Cuatrimestre {$period}") {
+            $item->grademax = 10;
+            $item->grademin = 0;
+            $item->itemname = "Cuatrimestre {$period}";
+            $item->update();
+        }
+
+        return $item;
+    }
+
+    $item = new grade_item((object)[
+        'courseid' => $courseid,
+        'itemtype' => 'manual',
+        'itemmodule' => null,
+        'iteminstance' => null,
+        'itemnumber' => 0,
+        'gradetype' => GRADE_TYPE_VALUE,
+        'grademax' => 10,
+        'grademin' => 0,
+        'idnumber' => $idnumber,
+        'itemname' => "Cuatrimestre {$period}",
+    ]);
+    $item->insert();
+
+    return $item;
+}
+
+// Escribe la nota final vía grade_item::update_final_grade(); lanza excepción si falla (dispara el rollback).
+function reporte_tp_write_period_grade(grade_item $item, int $userid, float $grade): void {
+    $result = $item->update_final_grade($userid, $grade);
+
+    if ($result === false) {
+        throw new Exception("No se pudo escribir la nota del período para el usuario {$userid}.");
+    }
+}
+
+// Elimina la nota manual persistida del período para un estudiante, si existe.
+// Si no hay grade_item ni grade_grade persistido, no hace nada (no-op), y la nota
+// vuelve a calcularse automáticamente al renderizar.
+function reporte_tp_delete_period_grade(int $courseid, int $period, int $userid): void {
+    global $DB;
+
+    $record = $DB->get_record('grade_items', [
+        'courseid' => $courseid,
+        'idnumber' => "periodo{$period}-{$courseid}"
+    ], '*', IGNORE_MISSING);
+
+    if (!$record) {
+        return;
+    }
+
+    $item = new grade_item($record);
+
+    $grade = grade_grade::fetch(['itemid' => $item->id, 'userid' => $userid]);
+
+    if (!$grade) {
+        return;
+    }
+
+    if ($grade->delete('reportes/reporteTPporCurso') === false) {
+        throw new Exception("No se pudo eliminar la nota del período para el usuario {$userid}.");
+    }
+
+    $item->force_regrading();
+}
+
+// Lee las notas de período persistidas (grade_item manual) para un curso y período.
+// Devuelve [userid => finalgrade] solo para notas numéricas no nulas.
+function reporte_tp_get_saved_period_grades(int $courseid, int $period): array {
+    global $DB;
+
+    $item = $DB->get_record('grade_items', [
+        'courseid' => $courseid,
+        'idnumber' => "periodo{$period}-{$courseid}"
+    ], '*', IGNORE_MISSING);
+
+    if (!$item) {
+        return [];
+    }
+
+    if (class_exists('grade_grade')) {
+        $grades = grade_grade::fetch_all(['itemid' => $item->id]);
+    } else {
+        $grades = $DB->get_records('grade_grades', ['itemid' => $item->id]);
+    }
+
+    $result = [];
+    if ($grades) {
+        foreach ($grades as $grade) {
+            $finalgrade = $grade->finalgrade;
+            if ($finalgrade !== null && is_numeric($finalgrade)) {
+                $result[(int)$grade->userid] = (float)$finalgrade;
+            }
+        }
+    }
+
+    return $result;
+}
+
 // Configuración mínima de página.
 $pageparams = [];
 if ($courseid) {
@@ -109,6 +410,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'setupgrades') {
         'prefix' => 'TP-%',
         'modname' => 'forum'
     ]);
+
+    // UNIT-3: la selección de setupgrades es exclusivamente VALID_GRADED_TP
+    // (excluye type='news', identificadores inválidos y CEE fuera de período).
+    $tpforums = array_filter($tpforums, 'reporte_tp_is_valid_graded_tp');
 
     $updatedcount = 0;
 
@@ -247,6 +552,146 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'savegrade') {
     ]));
 }
 
+// Guardado de notas de período (cuatrimestre).
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'saveperiodgrade') {
+    require_sesskey();
+
+    $postcourseid = required_param('courseid', PARAM_INT);
+
+    $course = $DB->get_record('course', ['id' => $postcourseid], '*', MUST_EXIST);
+    require_login($course);
+
+    $coursecontext = context_course::instance($course->id);
+    $roleflags = reporte_tp_role_flags($coursecontext, (int)$USER->id);
+
+    if (!$roleflags['caneditreport']) {
+        redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+            'courseid' => $postcourseid,
+            'gradeerror' => 'nopermission'
+        ]));
+    }
+
+    require_capability('mod/forum:grade', $coursecontext);
+
+    // Recuperación 2-D segura: data_submitted() aplica fix_utf8() recursivo sobre $_POST.
+    $submitted = data_submitted();
+    $periodgrade = is_object($submitted) ? ($submitted->periodgrade ?? []) : [];
+
+    if (!is_array($periodgrade)) {
+        $periodgrade = [];
+    }
+
+    // Validar TODO antes de escribir cualquier cosa.
+    $writes = [];
+    $deletes = [];
+    foreach ($periodgrade as $periodkey => $userentries) {
+        $period = (int)$periodkey;
+
+        if ($period !== 1 && $period !== 2) {
+            redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+                'courseid' => $postcourseid,
+                'gradeerror' => 'invalid'
+            ]));
+        }
+
+        if (!is_array($userentries)) {
+            redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+                'courseid' => $postcourseid,
+                'gradeerror' => 'invalid'
+            ]));
+        }
+
+        foreach ($userentries as $uidkey => $rawvalue) {
+            $uid = (int)$uidkey;
+
+            if ($uid <= 0) {
+                redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+                    'courseid' => $postcourseid,
+                    'gradeerror' => 'invaliduser'
+                ]));
+            }
+
+            if (!$DB->get_record('user', ['id' => $uid], 'id', IGNORE_MISSING)) {
+                redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+                    'courseid' => $postcourseid,
+                    'gradeerror' => 'invaliduser'
+                ]));
+            }
+
+            if (!is_enrolled($coursecontext, $uid)) {
+                redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+                    'courseid' => $postcourseid,
+                    'gradeerror' => 'notenrolled'
+                ]));
+            }
+
+            $value = trim((string)$rawvalue);
+
+            if ($value === '') {
+                // Campo vacío: eliminar el override persistido si existe (no-op si no hay).
+                $deletes[] = ['period' => $period, 'uid' => $uid];
+                continue;
+            }
+
+            if (!preg_match('/^\d{1,2}$/', $value)) {
+                redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+                    'courseid' => $postcourseid,
+                    'gradeerror' => 'invalid'
+                ]));
+            }
+
+            $grade = (int)$value;
+
+            if ($grade < 0 || $grade > 10) {
+                redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+                    'courseid' => $postcourseid,
+                    'gradeerror' => 'range'
+                ]));
+            }
+
+            $writes[] = ['period' => $period, 'uid' => $uid, 'grade' => $grade];
+        }
+    }
+
+    if (empty($writes) && empty($deletes)) {
+        // Nada que escribir (todos los campos vacíos): no-op silencioso.
+        redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+            'courseid' => $postcourseid
+        ]));
+    }
+
+    $transaction = $DB->start_delegated_transaction();
+
+    try {
+        foreach ($writes as $write) {
+            $item = reporte_tp_ensure_period_grade_item((int)$postcourseid, $write['period']);
+            reporte_tp_write_period_grade($item, $write['uid'], (float)$write['grade']);
+        }
+
+        foreach ($deletes as $delete) {
+            reporte_tp_delete_period_grade((int)$postcourseid, $delete['period'], $delete['uid']);
+        }
+
+        $transaction->allow_commit();
+    } catch (Exception $e) {
+        try {
+            $transaction->rollback($e);
+        } catch (Exception $ignored) {
+            // rollback() relanza la excepción original; el rollback ya se realizó.
+        }
+
+        redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+            'courseid' => $postcourseid,
+            'gradeerror' => 'save'
+        ]));
+    }
+
+    redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+        'courseid' => $postcourseid,
+        'periodsaved' => 1
+    ]));
+}
+
 // Obtener lista de cursos que tienen foros TP-*.
 $allcourses = $DB->get_records_sql("\n    SELECT DISTINCT c.id, c.shortname\n    FROM {course} c\n    JOIN {forum} f ON f.course = c.id\n    WHERE f.name LIKE :prefix\n    ORDER BY c.shortname\n", [
     'prefix' => 'TP-%'
@@ -284,6 +729,10 @@ $ungradedforumcount = 0;
 $canmanageactivities = false;
 $canviewallgrades = false;
 $canviewownreport = false;
+$caneditperiodgrade = false;
+$periodforums = [];
+$periodgrades = [];
+$savedperiodgrades = [];
 
 if ($courseid) {
     $selected_course = $DB->get_record('course', ['id' => $courseid], '*', MUST_EXIST);
@@ -303,6 +752,7 @@ if ($courseid) {
     }
 
     $canmanageactivities = $roleflags['caneditreport'] && has_capability('moodle/course:manageactivities', $coursecontext);
+    $caneditperiodgrade = $roleflags['caneditreport'] && has_capability('mod/forum:grade', $coursecontext);
 
     // Obtener solo foros TP-% visibles en la página del curso.
 $forums = $DB->get_records_sql("
@@ -311,6 +761,7 @@ $forums = $DB->get_records_sql("
         f.name,
         f.course,
         f.grade_forum,
+        f.type,
         cm.id AS cmid
     FROM {forum} f
     JOIN {course_modules} cm 
@@ -335,6 +786,10 @@ $forums = $DB->get_records_sql("
     'prefix' => 'TP-%',
     'modname' => 'forum'
 ]);
+
+    // UNIT-3: el listado de TP calificables se rige por VALID_GRADED_TP
+    // (excluye type='news', identificadores no canónicos y CEE fuera de período).
+    $forums = array_filter($forums, 'reporte_tp_is_valid_graded_tp');
 
     // Determinar permisos de calificación y si falta habilitar algún foro.
     foreach ($forums as $forum) {
@@ -410,6 +865,14 @@ $forums = $DB->get_records_sql("
         }
 
         $report_data[] = $row;
+    }
+
+    // Agrupación por período y notas de cuatrimestre por estudiante.
+    // El período se deriva del parser canónico (VALID_GRADED_TP), no de rangos de número de TP.
+    for ($period = 1; $period <= 2; $period++) {
+        $periodforums[$period] = reporte_tp_collect_period_forums($forums, $period);
+        $periodgrades[$period] = reporte_tp_compute_period_grades($students, $periodforums[$period], $forumgradevalues);
+        $savedperiodgrades[$period] = reporte_tp_get_saved_period_grades((int)$courseid, $period);
     }
 }
 
@@ -820,6 +1283,43 @@ $currentuser = fullname($USER);
             color: #777;
         }
 
+        .period-grade-cell {
+            text-align: center;
+            vertical-align: top;
+        }
+
+        .period-grade-input {
+            width: 58px;
+            padding: 4px 5px;
+            border: 1px solid #aaa;
+            border-radius: 4px;
+            font-size: 13px;
+            text-align: center;
+        }
+
+        .period-grade-meta {
+            display: block;
+            font-size: 11px;
+            color: #666;
+            margin-top: 3px;
+        }
+
+        .period-grade-readonly {
+            font-size: 13px;
+            font-weight: 600;
+            color: #333;
+        }
+
+        .period-grade-empty {
+            color: #999;
+            font-size: 13px;
+        }
+
+        #periodgrade-form {
+            margin-top: 14px;
+            padding: 4px 0;
+        }
+
         .empty-message {
             background: #fff;
             border: 1px solid #ddd;
@@ -952,6 +1452,12 @@ $currentuser = fullname($USER);
             </div>
         <?php endif; ?>
 
+        <?php if ($periodsaved): ?>
+            <div class="notice notice-success">
+                Notas del período guardadas correctamente.
+            </div>
+        <?php endif; ?>
+
         <?php if ($setupdone): ?>
             <div class="notice notice-success">
                 Se habilitó la calificación oficial en <?php echo (int)$setupdone; ?> foro(s) TP del curso.
@@ -960,7 +1466,18 @@ $currentuser = fullname($USER);
 
         <?php if ($gradeerror): ?>
             <div class="notice notice-error">
-                No se pudo guardar la calificación. Revisá que tengas permisos para calificar, que el foro tenga habilitada la calificación del foro completo y que la nota sea un número entero dentro del rango permitido.
+                <?php
+                    $grademessages = [
+                        'nopermission' => 'No tenés permisos para guardar calificaciones.',
+                        'notenrolled'  => 'Uno de los estudiantes indicados no está matriculado en este curso.',
+                        'invaliduser'  => 'Uno de los usuarios indicados no es válido.',
+                        'notgradable'  => 'El foro no tiene habilitada la calificación del foro completo.',
+                        'invalid'      => 'La nota debe ser un número entero.',
+                        'range'        => 'La nota está fuera del rango permitido.',
+                        'save'         => 'No se pudo guardar la calificación. Intentalo nuevamente.',
+                    ];
+                    echo isset($grademessages[$gradeerror]) ? $grademessages[$gradeerror] : 'No se pudo guardar la calificación. Revisá los datos ingresados.';
+                ?>
             </div>
         <?php endif; ?>
     </section>
@@ -989,6 +1506,8 @@ $currentuser = fullname($USER);
                         <?php foreach ($forums as $forum): ?>
                             <th><?php echo s($forum->name); ?></th>
                         <?php endforeach; ?>
+                        <th>Cuatrimestre 1</th>
+                        <th>Cuatrimestre 2</th>
                     </tr>
                     </thead>
 
@@ -1056,12 +1575,67 @@ $currentuser = fullname($USER);
                                     <?php endif; ?>
                                 </td>
                             <?php endforeach; ?>
+
+                            <?php foreach ([1, 2] as $period): ?>
+                                <?php
+                                    $pinfo = $periodgrades[$period][$data['userid']] ?? null;
+                                    $periodtotal = (int)($pinfo['total'] ?? 0);
+                                    $perioddelivered = (int)($pinfo['delivered'] ?? 0);
+
+                                    // Valor mostrado (estudiante, solo lectura): nota persistida (manual) si existe, si no la calculada.
+                                    $computedperiodgrade = (int)($pinfo['grade'] ?? 0);
+                                    $savedperiodgrade = $savedperiodgrades[$period][$data['userid']] ?? null;
+                                    $hasoverride = ($savedperiodgrade !== null && is_numeric($savedperiodgrade));
+                                    $periodgrade = $hasoverride ? (int)$savedperiodgrade : $computedperiodgrade;
+
+                                    // En edición (docente): el input solo se precarga con el override persistido;
+                                    // la nota calculada se muestra como placeholder (sugerencia de auto-nota).
+                                    $periodinputvalue = $hasoverride ? (int)$savedperiodgrade : '';
+                                    $periodplaceholder = (string)$computedperiodgrade;
+                                ?>
+                                <td class="period-grade-cell">
+                                    <?php if ($caneditperiodgrade): ?>
+                                        <?php if ($periodtotal > 0): ?>
+                                            <input type="number"
+                                                   class="period-grade-input"
+                                                   form="periodgrade-form"
+                                                   name="periodgrade[<?php echo (int)$period; ?>][<?php echo (int)$data['userid']; ?>]"
+                                                   min="0"
+                                                   max="10"
+                                                   step="1"
+                                                   inputmode="numeric"
+                                                   pattern="[0-9]*"
+                                                   placeholder="<?php echo s($periodplaceholder); ?>"
+                                                   value="<?php echo s((string)$periodinputvalue); ?>">
+                                            <span class="period-grade-meta">(<?php echo $perioddelivered; ?>/<?php echo $periodtotal; ?>)</span>
+                                        <?php else: ?>
+                                            <span class="period-grade-empty">—</span>
+                                        <?php endif; ?>
+                                    <?php else: ?>
+                                        <div class="period-grade-readonly">
+                                            <?php echo ($periodtotal > 0) ? ($periodgrade . ' / 10') : '—'; ?>
+                                        </div>
+                                    <?php endif; ?>
+                                </td>
+                            <?php endforeach; ?>
                         </tr>
                     <?php endforeach; ?>
                     </tbody>
                 </table>
             </div>
         </section>
+
+        <?php if ($caneditperiodgrade): ?>
+            <form id="periodgrade-form"
+                  method="post"
+                  action="<?php echo (new moodle_url('/reportes/reporteTPporCurso.php'))->out(false); ?>">
+                <input type="hidden" name="sesskey" value="<?php echo sesskey(); ?>">
+                <input type="hidden" name="action" value="saveperiodgrade">
+                <input type="hidden" name="courseid" value="<?php echo (int)$courseid; ?>">
+
+                <button type="submit" class="btn btn-success">Guardar notas del período</button>
+            </form>
+        <?php endif; ?>
 
     <?php endif; ?>
 
