@@ -42,3 +42,5 @@ trashdir/
 Thumbs.db
 .vscode/
 .idea/
+# Local AI runtime state
+.atl/
