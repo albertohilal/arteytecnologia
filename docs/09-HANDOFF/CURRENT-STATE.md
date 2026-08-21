@@ -949,3 +949,108 @@ GIT_STATUS =
 PRODUCTION_IMPACT =
   NONE
 ```
+
+## SDD_MOODLE_PERIOD_GRADING — POST-RECOVERY-C OPERATIONAL RECONCILIATION (2026-08-21)
+
+```text
+POST_RECOVERY_C_RECONCILIATION = COMPLETED
+
+CURRENT_OPERATIONAL_STATE_SOURCE = YES
+  this section supersedes the stale operational statements reconciled below
+  historical blocks above remain preserved as evidence
+  (no historical fact rewritten, deleted, or reinterpreted)
+
+RECOVERY-UNIT-C         = CLOSED_SUCCESS
+IMPORTANT_CHANGE_STATUS = CLOSED_SUCCESS
+
+CURRENT_GIT_BRANCH      = feature/copia-local-moodle
+CURRENT_HEAD            = 542d006087d76eef0975190d27eeb344ac699cbe
+  (short = 542d006 · final RECOVERY-UNIT-C closure commit)
+CURRENT_TRACKED_WORKTREE = CLEAN
+CURRENT_UNTRACKED       = AUXILIAR/ only
+  excluded from Git (never staged, never committed)
+```
+
+### Reconciliación de los seis residuos (2026-08-21)
+
+```text
+RECONCILIATION_SCOPE =
+  six stale/contradictory operational statements identified after RECOVERY-UNIT-C closure.
+  Each is marked with its RECONCILED state. Historical blocks are preserved.
+
+[1] STALE_REFERENCE = Header histórico: HEAD=809ba63 · WORKTREE=DIRTY (governance-framework block)
+    RECONCILED_STATE = HEAD = 542d006 (post-RECOVERY-UNIT-C) · tracked worktree CLEAN ·
+                       AUXILIAR/ untracked and excluded
+    CLASSIFICATION   = HISTORICAL_VALID (governance closure) + STALE (HEAD/WORKTREE fields)
+
+[2] STALE_REFERENCE = "Active SDD Work": IMPLEMENTATION=PARTIAL ·
+                       GATE_DATABASE_CHANGE=AWAITING_AUTHORIZATION
+    RECONCILED_STATE = superseded as operational state by RECOVERY-UNIT-C:
+                       RECOVERY-UNIT-C = CLOSED_SUCCESS ·
+                       GATE_DATABASE_CHANGE (RECOVERY-UNIT-C scope) = CONSUMED.
+                       Any future DB-changing operation re-arms
+                       GATE_DATABASE_CHANGE = AWAITING_AUTHORIZATION.
+    CLASSIFICATION   = STALE_BUT_PRESERVED
+
+[3] STALE_REFERENCE = HISTORICAL_HANDOFF_NOTICE: CURRENT_NEXT_UNIT=UNIT-4 ·
+                       UNIT_4_STATUS=NOT_AUTHORIZED
+    RECONCILED_STATE = superseded (2026-08-18): UNIT-4 rectified (TP_GRADE_CELL_UI restored
+                       to pre-UNIT4 baseline). Next recommended unit = UNIT-5.
+    CLASSIFICATION   = STALE_BUT_PRESERVED
+
+[4] STALE_REFERENCE = NEXT_UNIT=UNIT-5 (histórico, anterior a RECOVERY-UNIT-C)
+    RECONCILED_STATE = identifier UNIT-5 remains correct, but its rationale/context changed
+                       after RECOVERY-UNIT-C. NEXT_RECOMMENDED_UNIT = UNIT-5
+                       (reafirmado por reconciliación post-RECOVERY-C).
+    CLASSIFICATION   = STALE_BUT_PRESERVED (rationale updated, identifier unchanged)
+
+[5] STALE_REFERENCE = BLOCKER_2_STATUS = PENDING_NOT_ADDRESSED
+                       ("local DB anterior a las calificaciones actuales de producción")
+    RECONCILED_STATE = PARTIALLY_RESOLVED_FOR_PERIOD_1.
+                       The 99 verified first-period TP grades were restored and
+                       RECOVERY-UNIT-C closed successfully (CLOSED_SUCCESS).
+                       NOT asserted resolved for PERIOD_2 (no evidence exists for
+                       second-period grades fid 167..185 in local).
+    CLASSIFICATION   = CONTRADICTORY_CURRENT_STATE → PARTIALLY_RESOLVED_FOR_PERIOD_1
+
+[6] STALE_REFERENCE = OBSERVED_TECHNICAL_STATE: grade_forum=0 en TODOS los foros ·
+                       sin grade_items (setupgrades no ejecutado)
+    RECONCILED_STATE = historical and now FALSE for fid 158..166.
+                       Vigente para el primer período:
+                         fid 158..166 → grade_forum = 10
+                         9 grade_items existentes (64..72)
+                         99 calificaciones restauradas/verificadas.
+                       No new assertions about fid 167..185 beyond existing evidence.
+    CLASSIFICATION   = CONTRADICTORY_CURRENT_STATE (for fid 158..166)
+```
+
+### Estado operativo vigente (post-reconciliación)
+
+```text
+SDD_MOODLE_PERIOD_GRADING_STATUS =
+  IMPLEMENTATION_PARTIAL
+    UNIT-1   CLOSED_SUCCESS
+    UNIT-2A  CLOSED_SUCCESS
+    UNIT-2B  CLOSED_SUCCESS
+    UNIT-3   CLOSED_SUCCESS
+    UNIT-4   RECTIFIED (TP_GRADE_CELL_UI restored to pre-UNIT4 baseline)
+    UNIT-5   NOT_STARTED  (REQUIRED · SUPERSEDED_BY_RECOVERY = PARTIAL)
+    UNIT-6   NOT_STARTED
+    UNIT-7   NOT_STARTED
+    UNIT-8   NOT_STARTED
+
+NEXT_RECOMMENDED_UNIT =
+  UNIT-5  (escritura segura de calificación TP al Gradebook — RECTIFICATION_1)
+
+NEXT_RECOMMENDED_ACTION =
+  AUTHORIZE UNIT-5 → IMPLEMENT → VERIFY → STOP
+  (GATE_DATABASE_CHANGE required for the grade-write scope)
+
+DATABASE_CHANGED    = NO (documentation-only reconciliation)
+FILES_CHANGED       = docs/09-HANDOFF/CURRENT-STATE.md (this reconciliation append)
+GIT_CHANGED         = NO (no stage/commit/push)
+DOCKER_CHANGED      = NO
+PRODUCTION_IMPACT   = NONE
+
+IMPLEMENTATION_AUTHORIZED = NO
+```
