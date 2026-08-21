@@ -895,3 +895,172 @@ BLOCKER_2_STATUS  = PENDING_NOT_ADDRESSED (dump local anterior a calificaciones
                     de producción; separado, no se resuelve en esta fase)
 LOCAL_LOGIN_DEPENDENCY = PENDING
 ```
+
+---
+
+## UNIT-5 — SAFE TP GRADE SAVE — SPECIFICATION AMENDMENT (2026-08-21)
+
+> Enmienda de Specification posterior a `RECOVERY-UNIT-C = CLOSED_SUCCESS`
+> (`RESTORED_TP_GRADES = 99`). Esas 99 notas son **datos críticos** que UNIT-5 debe
+> preservar. No reescribe decisiones históricas válidas; agrega el contrato de
+> UNIT-5A / UNIT-5B.
+
+### Contexto y baseline protegido
+
+```text
+SPECIFICATION_AMENDMENT_UNIT_5 = COMPLETED
+SPECIFICATION_AMENDMENT_DATE   = 2026-08-21
+
+CONTEXT =
+  RECOVERY-UNIT-C   = CLOSED_SUCCESS
+  RESTORED_TP_GRADES = 99
+  (99 calificaciones de TP verificadas y sincronizadas en forum_grades + grade_grades)
+
+PROTECTED_BASELINE =
+  99 verified TP grades restored by RECOVERY-UNIT-C
+
+  UNIT-5 MUST NOT:
+    - recalcularlas masivamente
+    - reescribirlas masivamente
+    - borrar ninguna
+    - cambiar una nota distinta de la celda explícitamente probada/guardada
+    - modificar notas de período
+
+  Toda verificación futura debe comparar estado PRE/POST.
+```
+
+### División conceptual UNIT-5 (contractual)
+
+```text
+UNIT-5A = SAFE_TP_GRADE_BACKEND
+  objetivo: sustituir el mecanismo legacy de savegrade por la API oficial de Moodle
+            para calificaciones de foro.
+
+UNIT-5B = ASYNC_TP_GRADE_SAVE_UI
+  objetivo: guardar una nota individual sin full-page reload,
+            preservando el contexto operativo del docente.
+
+DIVISION_5A_5B             = CONTRACTUAL_FOR_SPECIFICATION
+UNIT-5A_PRECEDES_UNIT-5B   = YES
+
+UNIT-5A_IMPLEMENTATION     = NOT_AUTHORIZED
+UNIT-5B_IMPLEMENTATION     = NOT_AUTHORIZED
+```
+
+### Contrato UNIT-5A (SAFE_TP_GRADE_BACKEND)
+
+```text
+OFFICIAL_MOODLE_API_REQUIRED = YES
+  API prevista (según diseño existente):
+  mod_forum\grades\forum_gradeitem::store_grade_from_formdata()
+
+DIRECT_SQL_GRADE_WRITE            = NO
+DIRECT_GRADE_UPDATE_AS_PRIMARY_WRITE = NO
+
+EXPLICIT_TEACHER_SAVE_REQUIRED    = YES
+AUTOSAVE                          = NO
+NO_SILENT_OVERWRITE               = YES
+
+SAVE_SCOPE =
+  exactamente una combinación student × TP por acción explícita
+
+UNRELATED_GRADES_MUST_REMAIN_UNCHANGED = YES
+PERIOD_GRADES_MUST_NOT_CHANGE           = YES
+GRADE_FORUM_CONFIGURATION_MUST_NOT_CHANGE = YES
+FORUM_NAMES_MUST_NOT_CHANGE             = YES
+```
+
+### Contrato UNIT-5B (ASYNC_TP_GRADE_SAVE_UI)
+
+```text
+D-TP-GRADE-SAVE-NO-FULL-PAGE-RELOAD = REQUIRED
+
+FULL_PAGE_RELOAD_AFTER_SAVE      = NO
+EXPLICIT_SAVE_REQUIRED           = YES
+AUTOSAVE                         = NO
+SCROLL_CONTEXT_PRESERVED         = YES
+TEACHER_MUST_NOT_RELOCATE_STUDENT_TP_AFTER_SAVE = YES
+SUCCESS_FEEDBACK_REQUIRED        = YES
+
+  Feedback conceptual (no obligatorio de UI):
+    Guardar → Guardando… → Guardado
+
+ERROR_BEHAVIOR_REQUIRED =
+  - mostrar error asociado a la misma celda
+  - conservar el valor escrito por el docente
+  - no mostrar falso estado de éxito
+  - no modificar otras calificaciones
+
+ASYNCHRONOUS_COMMUNICATION_REQUIRED = YES
+  (evita full-page reload)
+CONCRETE_AJAX_FETCH_IMPLEMENTATION = TO_BE_DECIDED_IN_DESIGN
+```
+
+### Foco
+
+```text
+FOCUS_REQUIREMENT =
+  PRESERVE_OPERATIONAL_CONTEXT
+
+  La Specification NO impone todavía:
+    - mantener necesariamente foco exacto en el mismo input
+    - avanzar automáticamente al siguiente input
+
+EXACT_FOCUS_BEHAVIOR =
+  TO_BE_DECIDED_IN_DESIGN
+
+FOCUS_INVARIANT =
+  el guardado no debe obligar al docente a buscar nuevamente
+  la fila/TP en la grilla.
+```
+
+### Seguridad y permisos
+
+```text
+SESSKEY_VALIDATION         = YES
+SERVER_SIDE_GRADE_VALIDATION = YES
+CAPABILITY_CHECK           = YES
+USER_SCOPE_VALIDATION      = YES
+TP_SCOPE_VALIDATION        = YES
+
+  Una respuesta del cliente nunca sustituye validación server-side.
+```
+
+### Criterios de aceptación
+
+```text
+UNIT-5A:
+  ONE_CONTROLLED_GRADE_WRITE = PASS
+    SOURCE_INPUT → authorized save → forum_grades → grade_grades
+    → Gradebook → report reread
+  FORUM_GRADE_EQUALS_SOURCE     = YES
+  GRADEBOOK_GRADE_EQUALS_SOURCE = YES
+  UNRELATED_GRADES_UNCHANGED    = YES
+  NO_SILENT_OVERWRITE           = PASS
+  PERIOD_GRADE_CHANGED          = NO
+  FID_OUT_OF_SCOPE_CHANGED      = NO
+  (prueba con UNA nota controlada; restaurar posteriormente su valor original
+   mediante API oficial)
+
+UNIT-5B:
+  FULL_PAGE_RELOAD          = NO
+  SCROLL_CONTEXT_PRESERVED  = YES
+  EXPLICIT_SAVE             = YES
+  AUTOSAVE                  = NO
+  SUCCESS_FEEDBACK          = PASS
+  ERROR_RETAINS_INPUT       = YES
+  FALSE_SUCCESS_MESSAGE     = NO
+  UNRELATED_GRADES_CHANGED  = NO
+```
+
+### Estado SDD
+
+```text
+SPECIFICATION_AMENDMENT_UNIT_5 = COMPLETED
+UNIT-5A_SPECIFICATION          = COMPLETED
+UNIT-5B_SPECIFICATION          = COMPLETED
+UNIT-5A_IMPLEMENTATION         = NOT_AUTHORIZED
+UNIT-5B_IMPLEMENTATION         = NOT_AUTHORIZED
+DESIGN_AMENDMENT_REQUIRED      = YES
+NEXT_ACTION                    = UNIT-5 DESIGN AMENDMENT
+```
