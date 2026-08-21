@@ -870,3 +870,82 @@ COMMIT     = NOT_AUTHORIZED
 PUSH       = NOT_AUTHORIZED
 PRODUCTION = NOT_AUTHORIZED
 ```
+
+## SDD_MOODLE_PERIOD_GRADING — RECOVERY-UNIT-C FORMAL CLOSURE (2026-08-21)
+
+```text
+RECOVERY-UNIT-C-IMPLEMENTATION = COMPLETED
+RECOVERY-UNIT-C-TECHNICAL-VERIFICATION = PASSED
+RECOVERY-UNIT-C-VISUAL-VERIFICATION = PASSED
+RECOVERY-UNIT-C-VERIFICATION = PASSED
+
+GIT_CHECKPOINT_COMMIT =
+  30e448b394c24b8546b29ba37af236eb95bbef80 (short=30e448b)
+
+GIT_CHECKPOINT_PUSH =
+  PASS
+
+GIT_BRANCH =
+  feature/copia-local-moodle
+
+GIT_REMOTE =
+  github-viejo
+
+LOCAL_HEAD =
+  30e448b394c24b8546b29ba37af236eb95bbef80
+
+REMOTE_HEAD =
+  30e448b394c24b8546b29ba37af236eb95bbef80
+
+LOCAL_HEAD_EQUALS_REMOTE_HEAD =
+  YES
+
+GATE_GIT_CHECKPOINT =
+  CLOSED_SUCCESS
+
+RECOVERY-UNIT-C =
+  CLOSED_SUCCESS
+
+IMPORTANT_CHANGE_STATUS =
+  CLOSED_SUCCESS
+
+RESTORED_TP_GRADES =
+  99
+
+DATABASE_CHANGE =
+  LOCAL_ONLY
+  99 authorized TP grades restored through official Moodle forum grading API
+  forum_grades synchronized to grade_grades
+  verification PASSED
+
+PRE_C_BACKUP =
+  PRESERVED_IN_AUXILIAR
+  NOT_VERSIONED_BY_GIT
+
+AUXILIAR_INCLUDED_IN_GIT =
+  NO
+
+ROOT_CAUSE =
+  local DB was older than the verified grading source and lacked
+  the 99 first-period TP grades
+
+FILES_CHANGED =
+  docs/09-HANDOFF/CURRENT-STATE.md
+  (formal closure documentation only in this execution)
+
+DATABASE_CHANGED =
+  NO during this documentation execution
+
+DOCKER_CHANGED =
+  NO
+
+VERIFICATION_RESULT =
+  PASS
+
+GIT_STATUS =
+  formal closure documentation prepared
+  final documentation Git checkpoint pending authorization
+
+PRODUCTION_IMPACT =
+  NONE
+```
