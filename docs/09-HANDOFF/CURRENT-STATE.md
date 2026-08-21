@@ -734,3 +734,139 @@ COMMIT     = NOT_AUTHORIZED
 PUSH       = NOT_AUTHORIZED
 PRODUCTION = NOT_AUTHORIZED
 ```
+
+## SDD_MOODLE_PERIOD_GRADING — RECOVERY-UNIT-C VERIFICATION PASSED (2026-08-20)
+
+```text
+RECOVERY-UNIT-C                     = AWAITING_GIT_CHECKPOINT
+RECOVERY-UNIT-C-IMPLEMENTATION      = COMPLETED
+RECOVERY-UNIT-C-TECHNICAL-VERIFICATION = PASSED
+RECOVERY-UNIT-C-VISUAL-VERIFICATION = PASSED
+RECOVERY-UNIT-C-VERIFICATION           = PASSED
+
+SCOPE =
+  LOCAL_ONLY
+  courseid = 15 (shortname MedAud-26 · fullname Medios Aud-2026)
+  forum fid 158..166 · grade_items 64..72
+  users EXACT_MATCH 15/15 · TP EXACT_TP_MATCH 9/9
+  99 calificaciones restauradas en LOCAL
+
+RECOVERY-UNIT-C-PRE-C-BACKUP = COMPLETED
+
+PRE_C_BACKUP =
+  fresh local Moodle DB backup
+  preserved outside Git in AUXILIAR/BACKUPS/
+
+PRE_C_BACKUP_PATH =
+  AUXILIAR/BACKUPS/pre-recovery-unit-c-2026-08-20-134736.sql
+
+PRE_C_BACKUP_SHA256 =
+  ece138d24caf8107bfb1cbf98e00a3692c8707fcddb50f3fb57d11b4235a47f2
+
+PRE_C_BASELINE_PATH =
+  AUXILIAR/BACKUPS/pre-recovery-unit-c-baseline-2026-08-20-134736.txt
+
+PRE_C_BASELINE_SHA256 =
+  e16dc5b687e7792b3b1078f56870f4638c9afa52f29c7d51b013ed4c9ea70bdd
+
+PRE_C_STATE =
+  GRADEABLE_TP_COUNT = 9
+  GRADE_ITEMS_COUNT = 9
+  forum_grades non-null = 0
+  grade_grades non-null = 0
+  numeric zero grades = 0
+  STATE_DRIFT = NO
+
+GRADER =
+  GRADER_USERID = 2 (site admin)
+  GRADER_CAPABILITY_CHECK = PASS
+
+WRITE_METHOD =
+  mod_forum\grades\forum_gradeitem::store_grade_from_formdata()
+  (official API; NO direct SQL writes to forum_grades / grade_grades)
+  all 99 writes inside ONE $DB->start_delegated_transaction()
+
+RESTORE_RESULT =
+  SOURCE_NON_NULL_GRADE_COUNT = 99
+  PLANNED_RESTORE_COUNT = 99
+  WRITE_ATTEMPT_COUNT = 99
+  WRITE_SUCCESS_COUNT = 99
+  IN_TRANSACTION_FORUM_GRADES_MATCH_COUNT = 99
+  IN_TRANSACTION_GRADEBOOK_MATCH_COUNT = 99
+  IN_TRANSACTION_MISMATCH_COUNT = 0
+  ROLLBACK_REQUIRED = NO
+  ROLLBACK_EXECUTED = NO
+  FULL_DB_RESTORE_EXECUTED = NO
+
+POST_COMMIT_READ_BACK =
+  POST_FORUM_GRADES_NON_NULL = 99
+  POST_GRADE_GRADES_NON_NULL = 99
+  POST_SOURCE_FORUM_MATCH_COUNT = 99
+  POST_SOURCE_GRADEBOOK_MATCH_COUNT = 99
+  POST_FORUM_GRADEBOOK_MATCH_COUNT = 99
+  POST_MISMATCH_COUNT = 0
+  GRADEBOOK_API_MATCH_COUNT = 99
+
+DISTRIBUTION =
+  158→12 · 159→15 · 160→11 · 161→10 · 162→10 · 163→13 · 164→10 · 165→8 · 166→10
+
+INVARIANTS =
+  CURRENT_GRADEABLE_TP_COUNT = 9
+  CURRENT_GRADE_ITEMS_COUNT = 9
+  FID_167_185_CHANGED = NO
+  PERIOD_GRADES_CHANGED = NO
+  FORUM_NAMES_CHANGED = NO
+  GRADE_FORUM_CHANGED = NO
+  grade_items definitions unchanged (50 / 51 / 64..72 identical to PRE-C)
+
+OFFICIAL_REGRADE_SIDE_EFFECT = EXPECTED_NOT_CORRUPTION
+  course-total grade item 50 recomputed (15 computed rows = correct sums)
+  assign item 51 "Diseño Curricular" gained 15 NULL placeholder rows
+  no period grades persisted
+
+VERIFICATION =
+  GRADEBOOK_TECHNICAL_VERIFICATION = PASS
+  REPORT_TECHNICAL_RELECTURA = PASS
+  USER_VISUAL_GRADEBOOK_VERIFICATION = PASS
+  USER_VISUAL_REPORT_RELECTURA = PASS
+
+DATABASE_CHANGED =
+  NO during this documentation execution
+  YES previously during RECOVERY-UNIT-C:
+    99 authorized local TP grades via official Moodle API
+
+FILES_CHANGED =
+  docs/09-HANDOFF/CURRENT-STATE.md
+  (documentation only in this execution)
+
+MOODLE_CODE_CHANGED = NO
+MOODLEDATA_CHANGED = NO
+
+ROOT_CAUSE =
+  local DB was older than the verified grading source and lacked
+  the 99 first-period TP grades
+
+VERIFICATION_RESULT =
+  PASS
+
+GIT_STATUS =
+  branch feature/copia-local-moodle
+  tracked worktree was clean before this documentation update
+  CURRENT-STATE.md is now the only tracked modification
+  AUXILIAR/ remains untracked and excluded
+  no staging / commit / push
+
+DOCKER_CHANGED =
+  NO
+
+PRODUCTION_IMPACT =
+  NONE
+
+IMPORTANT_CHANGE_STATUS = AWAITING_GIT_CHECKPOINT
+GATE_DATABASE_CHANGE = CONSUMED
+GATE_GIT_CHECKPOINT = AWAITING_AUTHORIZATION
+
+COMMIT     = NOT_AUTHORIZED
+PUSH       = NOT_AUTHORIZED
+PRODUCTION = NOT_AUTHORIZED
+```
