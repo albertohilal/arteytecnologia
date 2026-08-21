@@ -1420,3 +1420,406 @@ PRODUCTION_IMPACT = NONE
 
 Detenerse al finalizar DESIGN. No iniciar IMPLEMENTATION. Esperar autorización expresa de
 Alberto para cualquier futura unidad de IMPLEMENTATION.
+
+---
+
+## UNIT-5 — DESIGN AMENDMENT (2026-08-21)
+
+> Enmienda de DESIGN posterior a la Specification UNIT-5 cerrada
+> (`D-TP-GRADE-SAVE-NO-FULL-PAGE-RELOAD = REQUIRED`). Define técnicamente
+> UNIT-5A (SAFE_TP_GRADE_BACKEND) y UNIT-5B (ASYNC_TP_GRADE_SAVE_UI).
+> **DESIGN ≠ IMPLEMENTATION.** No se autoriza ni se ejecuta código.
+
+### 0. Orden de ejecución y baseline
+
+```text
+PROTECTED_BASELINE_GRADES = 99
+RECOVERY-UNIT-C           = CLOSED_SUCCESS
+
+EXECUTION_ORDER (obligatorio, no monolítico):
+  UNIT-5A → VERIFY → GIT CHECKPOINT → autorización independiente
+  → UNIT-5B → VERIFY → GIT CHECKPOINT
+
+UNIT-5A_PRECEDES_UNIT-5B = YES
+  (5A es independiente y verificable sin 5B; 5B depende de 5A verificado)
+```
+
+### 1. UNIT-5A — SAFE_TP_GRADE_BACKEND
+
+Reemplaza el path legacy de `savegrade` (hoy `grade_update()` directo — líneas 531–540
+del reporte). Fuente de verdad: **`forum_grades`** (RECTIFICATION_1).
+
+```text
+OFFICIAL_API (obligatoria):
+  mod_forum\grades\forum_gradeitem::load_from_context($modulecontext)
+    → $gradeitem->require_user_can_grade($gradeduser, $grader)
+    → $gradeitem->store_grade_from_formdata($gradeduser, $grader, (object)['grade' => $grade])
+
+PROHIBIDO como mecanismo primario:
+  SQL directo a forum_grades
+  SQL directo a grade_grades
+  grade_update() directo
+
+VALIDACIONES_SERVER_SIDE (obligatorias, en orden):
+  1. require_login($course)
+  2. require_sesskey()
+  3. courseid válido (MUST_EXIST)
+  4. forumid válido (MUST_EXIST) y forum.course == courseid
+  5. cmid/context correcto: get_coursemodule_from_instance('forum', forumid, courseid)
+     → context_module::instance($cm->id)
+  6. reporte_tp_is_valid_graded_tp($forum) == true   (TP-CEE-NN válido, type != news)
+  7. is_enrolled($coursecontext, $userid)
+  8. reporte_tp_role_flags(...).caneditreport + require_capability('mod/forum:grade', $modulecontext)
+  9. grade_forum > 0 (foro calificable)
+  10. nota: '' → clear · /^\d+$/ · 0..grade_forum
+  11. UNA petición modifica exactamente una combinación student × TP
+```
+
+### 2. Concurrencia — compare-before-write (NO_SILENT_OVERWRITE)
+
+```text
+OPTIMISTIC_CONCURRENCY = YES
+  La UI envía, además del valor nuevo: EXPECTED_PREVIOUS_GRADE
+  El backend relee inmediatamente antes del write: CURRENT_SERVER_GRADE
+  (lectura sin side-effect: $DB->get_record('forum_grades', ...) o user_has_grade();
+   NO usar get_grade_for_user(), que crea registro vacío)
+
+REGLA:
+  CURRENT_SERVER_GRADE == EXPECTED_PREVIOUS_GRADE → continuar write
+  si difieren → NO escribir · devolver CONFLICT · informar valor actual
+                · obligar al docente a releer/decidir · nunca sobrescribir silencioso
+
+COMPARACIÓN ROBUSTA (NULL != 0):
+  representación canónica del valor:
+    sin nota (forum_grades.grade NULL / ausente) → sentinel 'null'
+    0                     → '0'
+    1..10                 → (string)int del valor
+  EXPECTED_PREVIOUS_GRADE vacío en UI == sentinel 'null'
+
+  El valor oculto del cliente NO es fuente de verdad: solo es precondition
+  comparada contra DB.
+
+GRADE_CONFLICT_STATUS =
+  HTTP 409 (conceptual) — en el entorno Moodle/PHP local se materializa como
+  respuesta JSON { ok:false, error:"conflict", currentgrade, message }
+```
+
+### 3. Transacción y atomicidad 5A
+
+```text
+UNIT_5A_TRANSACTION_STRATEGY =
+  PRECHECK
+  → READ CURRENT SERVER GRADE
+  → OPTIMISTIC CONCURRENCY CHECK
+  → start_delegated_transaction()
+  → store_grade_from_formdata()
+  → IN_TRANSACTION READ-BACK forum_grades
+  → IN_TRANSACTION READ-BACK grade_grades
+  → VERIFY both == requested grade
+
+  si mismatch o excepción:
+    transaction rollback
+    verify original grade preserved
+    STOP
+    NO COMMIT
+
+  si ambas capas coinciden:
+    allow_commit()
+
+  → POST-COMMIT READ-BACK forum_grades
+  → POST-COMMIT READ-BACK grade_grades
+
+  si POST-COMMIT mismatch:
+    logical rollback únicamente del target mediante API oficial
+    → restore original grade
+    → double read-back
+    → report failure
+
+IN_TRANSACTION_DATA_VERIFICATION = REQUIRED
+POST_COMMIT_DATA_VERIFICATION    = REQUIRED
+
+RATIONALE =
+  evitar confirmar una inconsistencia detectable antes del commit,
+  manteniendo además verificación post-commit porque Moodle grading
+  puede producir efectos secundarios fuera de la atomicidad estricta
+  de la transacción DB.
+
+DATABASE_TRANSACTION_COVERS_ALL_MOODLE_SIDE_EFFECTS = NO
+  → DB consistency check antes del commit
+  + post-commit read-back
+  + logical rollback por API si fuera necesario.
+
+INTERACCIÓN REAL (verificada, RECTIFICATION_1 + código local):
+  store_grade_from_formdata()
+    → get_grade_for_user() (crea fila vacía si no existe)
+    → store_grade(): check_grade_validity() → $DB->update_record('forum_grades', $grade)
+      → forum_update_grades($forumrecord, $grade->userid)
+  forum_update_grades() (mod/forum/lib.php:808) lee forum_grades y sincroniza:
+    → forum_grade_item_update() → grade_update()  → grade_grades.finalgrade
+  Orden: forum_grades se escribe PRIMERO, luego grade_grades se sincroniza.
+```
+
+### 4. Respuesta del backend (JSON)
+
+```text
+RESPONSE_FORMAT = JSON cuando la petición es async; redirect tradicional cuando no.
+
+CONTRATO MÍNIMO:
+  success:
+    { "ok": true, "userid": ..., "forumid": ..., "grade": ...,
+      "previousgrade": ..., "message": ... }
+  error validación:
+    { "ok": false, "error": "validation", "message": ... }
+  conflict:
+    { "ok": false, "error": "conflict", "currentgrade": ..., "message": ... }
+
+NO INCLUIR: stack traces · SQL · secrets · información de otros alumnos.
+
+DISTINCIÓN HTML vs ASYNC:
+  la petición async lleva async=1 (campo de formulario) y/o header Accept: application/json.
+  backend: optional_param('async', 0, PARAM_INT) → si async: emitir JSON y terminar;
+  si no: mantener el redirect() actual (fallback progressive enhancement).
+```
+
+### 5. Compatibilidad / fallback
+
+```text
+PROGRESSIVE_ENHANCEMENT = YES
+  UNIT-5A funciona correctamente ANTES de UNIT-5B:
+    - el botón Guardar actual puede seguir provocando reload temporalmente durante 5A;
+    - pero el backend YA escribe mediante API oficial (seguro).
+  UNIT-5B luego intercepta el guardado para evitar reload.
+
+NO_DOS_ALGORITMOS = YES
+  HTML POST tradicional y async reutilizan el MISMO backend seguro (5A).
+  La única diferencia es el formato de respuesta (redirect vs JSON), no la ruta de escritura.
+```
+
+### 6. UNIT-5B — ASYNC_TP_GRADE_SAVE_UI
+
+```text
+ALTERNATIVA ELEGIDA = A — interceptar el submit del <form> de celda (.grade-form)
+JUSTIFICACIÓN:
+  - reutiliza el formulario nativo existente (funciona sin JS → fallback a reload);
+  - menor cambio posible (no se reestructura el HTML de la celda);
+  - reutiliza el backend 5A (mismo endpoint action=savegrade);
+  - vanilla JS sin framework (el reporte actual NO tiene infraestructura JS/AMD);
+  - progressive enhancement: si JS falla, el submit nativo sigue funcionando.
+
+FLUJO:
+  docente edita nota → Guardar explícito (NO autosave)
+  → estado local "Guardando…"
+  → fetch() async POST (FormData del form + async=1 + header Accept: application/json)
+  → backend 5A → JSON
+  → éxito / conflicto / error
+  → actualizar exclusivamente ESA celda (no la página)
+  → NO full-page reload
+```
+
+### 7. Estados de celda
+
+```text
+CELL_STATES = IDLE · SAVING · SAVED · ERROR · CONFLICT
+
+IDLE      → [ Guardar ]
+SAVING    → Guardando…
+SAVED     → ✓ Guardado
+ERROR     → Error al guardar
+CONFLICT  → La nota cambió desde que cargaste la página. No se guardó.
+
+FALSE_SUCCESS_MESSAGE = IMPOSSIBLE_BY_DESIGN
+  (SAVED solo tras respuesta ok:true del backend, nunca ante error/conflicto)
+
+CONFLICT:
+  NO modificar automáticamente el input con el valor del servidor;
+  mostrar el valor actual (currentgrade) como información para que el docente decida.
+```
+
+### 8. Scroll y foco
+
+```text
+AUTO_ADVANCE_TO_NEXT_GRADE = NO
+SCROLL_POSITION            = UNCHANGED
+FOCUS_AFTER_SUCCESS        = SAME_CELL_OPERATIONAL_CONTEXT
+FOCUS_AFTER_ERROR          = GRADE_INPUT_SAME_CELL
+FOCUS_AFTER_CONFLICT       = GRADE_INPUT_SAME_CELL
+
+  - NO mover automáticamente al siguiente estudiante/TP;
+  - NO scroll programático;
+  - posición de página intacta;
+  - tras respuesta, conservar/restaurar el foco al control operativo de la misma celda;
+  - sin navegación automática en UNIT-5B.
+
+JUSTIFICACIÓN: comportamiento conservador, evita sorpresas; la Specification solo exige
+PRESERVE_OPERATIONAL_CONTEXT (EXACT_FOCUS_BEHAVIOR = TO_BE_DECIDED_IN_DESIGN → aquí se
+decide el mínimo conservador, sin auto-avance).
+```
+
+### 9. Sincronización del valor previo
+
+```text
+Tras un SAVE exitoso, el cliente actualiza su EXPECTED_PREVIOUS_GRADE al valor
+confirmado por el backend (evita falsos conflictos en ediciones sucesivas sin reload).
+
+Ejemplo:
+  página carga con 7 → guarda 8 → backend confirma 8
+  → expected_previous pasa a 8 → luego guarda 9 comparando contra 8.
+
+MECANISMO MÍNIMO PROPUESTO:
+  atributo data-expected-grade en el <input type="number"> de la celda
+  ('' = sin nota). El JS lo lee al submit y lo actualiza tras éxito.
+  (alternativa equivalente: hidden input por celda; se decide en IMPLEMENTATION.)
+```
+
+### 10. Protección de las otras 98/99 notas
+
+```text
+INVARIANTS:
+  TARGET_CELL_CHANGED    = 1 máximo
+  UNRELATED_GRADES_CHANGED = 0
+
+PRUEBA CONTROLADA (UNA nota existente):
+  PRE_TEST:
+    - seleccionar una combinación student × TP explícita (en PRECHECK de implementación,
+      no ahora);
+    - capturar forum_grades.grade y grade_grades.finalgrade del target;
+    - capturar checksum/matriz de las otras 98 notas en scope;
+    - registrar valor original.
+  TEST: original → temporary_test_value (vía API oficial)
+  VERIFY: source request → forum_grades → grade_grades → Gradebook → reporte/relectura
+  ROLLBACK TEST: temporary_test_value → original (vía API oficial)
+  FINAL VERIFY:
+    - target vuelve al original;
+    - otras 98 = idénticas;
+    - 99 notas preservadas;
+    - period grades unchanged.
+```
+
+### 11. Test de conflicto (NO_SILENT_OVERWRITE)
+
+```text
+1. leer grade original X;
+2. simular request con EXPECTED_PREVIOUS_GRADE distinto de X (precondition falsa);
+3. backend debe responder CONFLICT;
+4. DB permanece exactamente X;
+5. Gradebook permanece X.
+
+Esta prueba NO requiere escribir otra nota: el conflicto se induce con precondition falsa.
+```
+
+### 12. Gates
+
+```text
+GATE_DATABASE_CHANGE_UNIT_5A = REQUIRED
+  (5A modifica calificaciones durante su test controlado).
+  Antes de implementar 5A debe existir: precheck · backup/snapshot de los 99 grades ·
+  selección explícita del test target · rollback definido · autorización expresa.
+
+GATE_DATABASE_CHANGE_UNIT_5B = NOT_REQUIRED_FOR_CODE_IMPLEMENTATION
+  (5B solo modifica código/UI y reutiliza 5A ya verificado).
+  PERO la verificación E2E de 5B que guarde una nota real requerirá protección
+  equivalente o reutilizar un test controlado expresamente autorizado.
+```
+
+### 13. Archivos / arquitectura
+
+```text
+UNIT_5A_PROPOSED_FILES = moodle/reportes/reporteTPporCurso.php
+UNIT_5B_PROPOSED_FILES = moodle/reportes/reporteTPporCurso.php
+
+JUSTIFICACIÓN (un único archivo, sin endpoint nuevo):
+  - el reporte es un script custom autocontenido; el handler savegrade YA vive allí
+    y YA posee require_login()/sesskey()/contexto correctos;
+  - un endpoint separado duplicaría bootstrap de login/sesskey/permisos (riesgo + mantenimiento);
+  - 5A = modificar el handler savegrade (API oficial + concurrency + JSON branch);
+  - 5B = añadir bloque <script> vanilla JS + atributo data-expected-grade en la celda;
+  - sin crear archivos en esta fase (se decide en IMPLEMENTATION si se externaliza el JS).
+```
+
+### 14. Compatibilidad Moodle (3.9.1+ local · 4.0.5 referencia)
+
+```text
+APIs VERIFICADAS en runtime local 3.9.1+ (ya documentadas en RECTIFICATION_1/5):
+  mod_forum\grades\forum_gradeitem (load_from_context, store_grade_from_formdata, user_has_grade)
+  core_grades\component_gradeitem · forum_update_grades() · forum_grade_item_update()
+  grade_get_grades() · $DB->get_record('forum_grades', ...)
+
+JS:
+  fetch() + FormData + addEventListener + data-* attributes — estándar web, sin dependencia
+  de versión de Moodle; funciona en el theme de 3.9 y en 4.0.5.
+
+JSON:
+  json_encode() (PHP core) — disponible en ambos.
+
+No se introducen APIs ausentes en 3.9.1+.
+```
+
+### 15. Rollback
+
+```text
+UNIT-5A code rollback:
+  volver al código PRE-5A mediante baseline específico por unidad (PRE_UNIT_BASELINE_CAPTURE);
+  NO git restore/reset/checkout automático (worktree histórico protegido).
+
+UNIT-5A data rollback:
+  restaurar ÚNICAMENTE el test target mediante API oficial (store_grade_from_formdata).
+  No restaurar dump completo salvo fallo extraordinario + nueva autorización.
+
+UNIT-5B rollback:
+  volver al código PRE-5B; el backend 5A permanece funcional e independiente.
+```
+
+### 16. Criterios de aceptación de DESIGN
+
+```text
+UNIT-5A:
+  OFFICIAL_API_WRITE           = PASS
+  FORUM_GRADE_MATCH            = PASS
+  GRADEBOOK_MATCH              = PASS
+  NO_SILENT_OVERWRITE          = PASS
+  CONFLICT_PROTECTION          = PASS
+  UNRELATED_98_GRADES_UNCHANGED = PASS
+  TARGET_RESTORED_TO_ORIGINAL  = PASS
+  PERIOD_GRADES_CHANGED        = NO
+  FID_OUT_OF_SCOPE_CHANGED     = NO
+
+  IN_TRANSACTION_FORUM_GRADE_MATCH = PASS
+  IN_TRANSACTION_GRADEBOOK_MATCH   = PASS
+  IN_TRANSACTION_MISMATCH_COUNT    = 0
+  COMMIT_ALLOWED_ONLY_IF_IN_TRANSACTION_MATCH = YES
+  POST_COMMIT_FORUM_GRADE_MATCH    = PASS
+  POST_COMMIT_GRADEBOOK_MATCH      = PASS
+  PARTIAL_COMMIT_ON_DETECTED_PRECOMMIT_MISMATCH = NO
+
+UNIT-5B:
+  FULL_PAGE_RELOAD             = NO
+  EXPLICIT_SAVE                = YES
+  AUTOSAVE                     = NO
+  SCROLL_POSITION_PRESERVED    = YES
+  OPERATIONAL_FOCUS_PRESERVED  = YES
+  SUCCESS_FEEDBACK             = PASS
+  ERROR_RETAINS_INPUT          = YES
+  CONFLICT_RETAINS_INPUT       = YES
+  FALSE_SUCCESS_MESSAGE        = NO
+  BACKEND_5A_REUSED            = YES
+```
+
+### 17. Estado final del design
+
+```text
+UNIT_5_DESIGN_AMENDMENT = COMPLETED
+UNIT-5A_DESIGN          = COMPLETED
+UNIT-5B_DESIGN          = COMPLETED
+
+UNIT-5A_READY_FOR_AUTHORIZATION = YES
+UNIT-5B_DEPENDS_ON_UNIT-5A_VERIFIED = YES
+
+UNIT-5A_IMPLEMENTATION = NOT_AUTHORIZED
+UNIT-5B_IMPLEMENTATION = NOT_AUTHORIZED
+
+NEXT_ACTION = GIT CHECKPOINT OF DESIGN · luego authorization review for UNIT-5A
+
+DATABASE_CHANGED  = NO
+DOCKER_CHANGED    = NO
+PRODUCTION_IMPACT = NONE
+```
