@@ -369,6 +369,64 @@ function reporte_tp_get_saved_period_grades(int $courseid, int $period): array {
     return $result;
 }
 
+// ===========================================================================
+// UNIT-5A: backend seguro de escritura de nota de foro (SAFE_TP_GRADE_BACKEND).
+// Reemplaza el write legacy grade_update() por la API oficial
+// mod_forum\grades\forum_gradeitem::store_grade_from_formdata().
+// ===========================================================================
+
+// Representación canónica de una nota para comparación de concurrencia.
+// (RECTIFICATION R3-002) Función idempotente única aplicada IDÉNTICA a expected/current/read-back.
+// 'null'  = sin nota (NULL / ausente / vacío / 'null' / no numérico). NULL es distinto de 0.
+// '7'     = 7 y 7.0 (equivalencia numérica sin round/truncate).
+// '7.5'   = decimal legítimo (precisión preservada; NUMBER(10,5)).
+function reporte_tp_canonical_grade($grade): string {
+    if ($grade === null || $grade === '' || $grade === false) {
+        return 'null';
+    }
+
+    if (strtolower((string)$grade) === 'null') {
+        return 'null';
+    }
+
+    if (!is_numeric($grade)) {
+        return 'null';
+    }
+
+    return (string)(float)$grade;
+}
+
+// Mensaje legible por código de error del guardado de calificación.
+function reporte_tp_grade_error_message(string $code): string {
+    $messages = [
+        'nopermission' => 'No tenés permisos para guardar calificaciones.',
+        'notenrolled'  => 'El estudiante indicado no está matriculado en este curso.',
+        'invaliduser'  => 'El usuario indicado no es válido.',
+        'notgradable'  => 'El foro no tiene habilitada la calificación del foro completo.',
+        'invalid'      => 'La nota debe ser un número entero.',
+        'range'        => 'La nota está fuera del rango permitido.',
+        'conflict'     => 'La nota cambió desde que cargaste la página. No se guardó. Recargá y volvé a intentarlo.',
+        'save'         => 'No se pudo guardar la calificación. Intentalo nuevamente.',
+    ];
+
+    return $messages[$code] ?? 'No se pudo guardar la calificación. Revisá los datos ingresados.';
+}
+
+// Emite la respuesta JSON del backend seguro 5A y termina la ejecución.
+// (Ruta reutilizable que UNIT-5B consumirá luego por fetch(); no se usa JS todavía.)
+function reporte_tp_emit_json_response(array $payload, int $status = 200): void {
+    if ($status !== 200) {
+        http_response_code($status);
+    }
+
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store');
+
+    echo json_encode($payload);
+
+    exit;
+}
+
 // Configuración mínima de página.
 $pageparams = [];
 if ($courseid) {
@@ -444,27 +502,51 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'setupgrades') {
     ]));
 }
 
-// Guardado rápido de calificación oficial del foro completo.
+// Guardado seguro de calificación oficial del foro completo (UNIT-5A backend).
+// Reemplaza el write legacy grade_update() por la API oficial
+// mod_forum\grades\forum_gradeitem::store_grade_from_formdata().
+// UNA petición modifica exactamente UNA combinación student × TP.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'savegrade') {
     require_sesskey();
+
+    $async = optional_param('async', 0, PARAM_INT);
 
     $postcourseid = required_param('courseid', PARAM_INT);
     $forumid = required_param('forumid', PARAM_INT);
     $userid = required_param('userid', PARAM_INT);
     $gradevalue = optional_param('grade', '', PARAM_RAW_TRIMMED);
+    $expectedprevious = optional_param('expected_previous_grade', '', PARAM_RAW_TRIMMED);
 
     $course = $DB->get_record('course', ['id' => $postcourseid], '*', MUST_EXIST);
     require_login($course);
 
     $coursecontext = context_course::instance($course->id);
 
-    if (!is_enrolled($coursecontext, $userid)) {
+    // Termina la petición con el código de error dado: JSON si es async, redirect si no.
+    $responderror = function (string $code, ?array $extra = null) use ($async, $postcourseid, $forumid, $userid) {
+        if ($async) {
+            $payload = [
+                'ok' => false,
+                'error' => $code,
+                'userid' => $userid,
+                'forumid' => $forumid,
+                'message' => reporte_tp_grade_error_message($code),
+            ];
+
+            if ($extra !== null) {
+                $payload = array_merge($payload, $extra);
+            }
+
+            reporte_tp_emit_json_response($payload, $code === 'conflict' ? 409 : 200);
+        }
+
         redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
             'courseid' => $postcourseid,
-            'gradeerror' => 'notenrolled'
+            'gradeerror' => $code,
         ]));
-    }
+    };
 
+    // Foro válido y perteneciente al curso (courseid/forumid scope).
     $forum = $DB->get_record('forum', [
         'id' => $forumid,
         'course' => $postcourseid
@@ -474,82 +556,197 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'savegrade') {
     $modulecontext = context_module::instance($cm->id);
     $roleflags = reporte_tp_role_flags($coursecontext, (int)$USER->id);
 
-    // Protección real del backend: solo docentes, managers o administradores pueden calificar.
-    if (!$roleflags['caneditreport']) {
-        redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
-            'courseid' => $postcourseid,
-            'gradeerror' => 'nopermission'
-        ]));
+    // Solo TP-CEE-NN válido (type != news).
+    if (!reporte_tp_is_valid_graded_tp($forum)) {
+        $responderror('notgradable');
     }
 
-    require_capability('mod/forum:grade', $modulecontext);
+    // Estudiante objetivo matriculado en el curso.
+    if (!is_enrolled($coursecontext, $userid)) {
+        $responderror('notenrolled');
+    }
+
+    // Solo docentes, managers o administradores pueden calificar.
+    if (!$roleflags['caneditreport']) {
+        $responderror('nopermission');
+    }
+
+    if (!has_capability('mod/forum:grade', $modulecontext)) {
+        $responderror('nopermission');
+    }
 
     // Solo se guarda sobre "Whole forum grading", no sobre ratings de mensajes.
     if (empty($forum->grade_forum) || (float)$forum->grade_forum <= 0) {
-        redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
-            'courseid' => $postcourseid,
-            'gradeerror' => 'notgradable'
-        ]));
+        $responderror('notgradable');
     }
 
+    // Validación del valor: '' → clear · entero · 0..grade_forum (NULL != 0).
     $gradevalue = trim($gradevalue);
 
     if ($gradevalue === '') {
         $rawgrade = null;
     } else if (!preg_match('/^\d+$/', $gradevalue)) {
-        redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
-            'courseid' => $postcourseid,
-            'gradeerror' => 'invalid'
-        ]));
+        $responderror('invalid');
     } else {
         $rawgrade = (int)$gradevalue;
 
         if ($rawgrade < 0 || $rawgrade > (int)$forum->grade_forum) {
-            redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
-                'courseid' => $postcourseid,
-                'gradeerror' => 'range'
-            ]));
+            $responderror('range');
         }
     }
 
-    $grade = new stdClass();
-    $grade->userid = $userid;
-    $grade->rawgrade = $rawgrade;
-    $grade->usermodified = $USER->id;
-    $grade->dategraded = time();
+    // --- Lock lógico por (forumid, userid): serializa escrituras concurrentes ---
+    // (RECTIFICATION-TOCTOU) Advisory lock oficial de Moodle (\core\lock), session-scoped
+    // e independiente de la transacción DB: cubre la secuencia completa
+    // READ → COMPARE → API WRITE → READ-BACK, incluido el read-back post-commit.
+    $lockfactory = \core\lock\lock_config::get_lock_factory('reportes_tp_grade');
+    $lock = $lockfactory->get_lock("forum_{$forumid}_{$userid}", 5);
 
-    $gradeitemname = new stdClass();
-    $gradeitemname->name = $forum->name;
+    if ($lock === false) {
+        // Timeout agotado: la calificación está ocupada por otra escritura concurrente.
+        $responderror('conflict', [
+            'busy' => true,
+        ]);
+    }
 
-    $itemdetails = [
-        'itemname' => get_string('gradeitemnameforwholeforum', 'forum', $gradeitemname),
-        'gradetype' => GRADE_TYPE_VALUE,
-        'grademax' => (float)$forum->grade_forum,
-        'grademin' => 0
-    ];
+    try {
+    // --- Concurrencia optimista: compare AUTORITATIVO BAJO LOCK (NO_SILENT_OVERWRITE) ---
+    // Lectura sin side-effect (NO get_grade_for_user(), que crea registro vacío).
+    $currentrecord = $DB->get_record('forum_grades', [
+        'forum' => $forumid,
+        'itemnumber' => 1,
+        'userid' => $userid,
+    ], 'grade', IGNORE_MISSING);
 
-    $result = grade_update(
-        'mod/forum',
-        $forum->course,
-        'mod',
-        'forum',
-        $forum->id,
-        1,
-        $grade,
-        $itemdetails
-    );
+    $currentcanonical = reporte_tp_canonical_grade($currentrecord ? $currentrecord->grade : null);
+    $expectedcanonical = reporte_tp_canonical_grade($expectedprevious);
 
-    if ($result !== GRADE_UPDATE_OK) {
-        redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
-            'courseid' => $postcourseid,
-            'gradeerror' => 'save'
-        ]));
+    // Precondition falsa → CONFLICT → NO WRITE (nunca sobrescribir silencioso).
+    if ($currentcanonical !== $expectedcanonical) {
+        $responderror('conflict', [
+            'currentgrade' => ($currentcanonical === 'null') ? null : (int)$currentcanonical,
+        ]);
+    }
+
+    // --- Escritura vía API oficial, dentro de transacción, con doble read-back ---
+    $gradeduser = $DB->get_record('user', ['id' => $userid], '*', MUST_EXIST);
+    $grader = $DB->get_record('user', ['id' => $USER->id], '*', MUST_EXIST);
+
+    $requestedcanonical = reporte_tp_canonical_grade($rawgrade);
+
+    $forumgradeitem = \mod_forum\grades\forum_gradeitem::load_from_context($modulecontext);
+
+    try {
+        $forumgradeitem->require_user_can_grade($gradeduser, $grader);
+    } catch (Exception $e) {
+        $responderror('nopermission');
+    }
+
+    // (object)['grade' => ''] = clear (grade_floatval('') → null); si no, valor numérico.
+    $formdata = (object)['grade' => ($rawgrade === null) ? '' : (string)$rawgrade];
+
+    // Read-back (forum_grades + grade_grades) sin side-effects. Re-lee el grade_item
+    // fresco cada vez (por si forum_update_grades() lo creó durante el write).
+    $readback = function () use ($DB, $forum, $forumid, $userid): array {
+        $fg = $DB->get_record('forum_grades', [
+            'forum' => $forumid,
+            'itemnumber' => 1,
+            'userid' => $userid,
+        ], 'grade', IGNORE_MISSING);
+
+        $fgcanonical = reporte_tp_canonical_grade($fg ? $fg->grade : null);
+
+        $ggcanonical = 'null';
+        $ggoverridden = false;
+        $gi = $DB->get_record('grade_items', [
+            'courseid' => $forum->course,
+            'itemtype' => 'mod',
+            'itemmodule' => 'forum',
+            'iteminstance' => $forumid,
+            'itemnumber' => 1,
+        ], 'id', IGNORE_MISSING);
+
+        if ($gi) {
+            $gg = $DB->get_record('grade_grades', [
+                'itemid' => $gi->id,
+                'userid' => $userid,
+            ], 'finalgrade, overridden', IGNORE_MISSING);
+            $ggcanonical = reporte_tp_canonical_grade($gg ? $gg->finalgrade : null);
+            $ggoverridden = ($gg && !empty($gg->overridden));
+        }
+
+        return [$fgcanonical, $ggcanonical, $ggoverridden];
+    };
+
+    $transaction = $DB->start_delegated_transaction();
+
+    try {
+        $stored = $forumgradeitem->store_grade_from_formdata($gradeduser, $grader, $formdata);
+
+        if ($stored === false) {
+            throw new Exception('store_grade_from_formdata() returned false');
+        }
+
+        // IN-TRANSACTION read-back: commit solo si forum_grades coincide y, si no está
+        // sobrescrito (override), grade_grades también coincide con la nota solicitada.
+        [$fgcanonical, $ggcanonical, $ggoverridden] = $readback();
+
+        $readbackok = ($fgcanonical === $requestedcanonical)
+            && ($ggoverridden || $ggcanonical === $requestedcanonical);
+
+        if (!$readbackok) {
+            throw new Exception('in-transaction read-back mismatch');
+        }
+
+        $transaction->allow_commit();
+    } catch (Exception $e) {
+        try {
+            $transaction->rollback($e);
+        } catch (Exception $ignored) {
+            // rollback() relanza la excepción original; el rollback ya se realizó.
+        }
+
+        $responderror('save');
+    }
+
+    // POST-COMMIT read-back (Moodle grading puede tener efectos fuera de la transacción DB).
+    [$fgpostcanonical, $ggpostcanonical, $ggoverriddenpost] = $readback();
+
+    $readbackokpost = ($fgpostcanonical === $requestedcanonical)
+        && ($ggoverriddenpost || $ggpostcanonical === $requestedcanonical);
+
+    if (!$readbackokpost) {
+        // Rollback lógico únicamente del target mediante API oficial (restaurar valor original).
+        try {
+            $rollbackform = (object)['grade' => ($currentcanonical === 'null') ? '' : $currentcanonical];
+            $forumgradeitem->store_grade_from_formdata($gradeduser, $grader, $rollbackform);
+        } catch (Exception $ignored) {
+            // El intento de rollback lógico falló; se informa el fallo de todos modos.
+        }
+
+        $responderror('save');
+    }
+
+    // Éxito.
+    if ($async) {
+        reporte_tp_emit_json_response([
+            'ok' => true,
+            'userid' => $userid,
+            'forumid' => $forumid,
+            'grade' => ($requestedcanonical === 'null') ? null : (int)$requestedcanonical,
+            'previousgrade' => ($currentcanonical === 'null') ? null : (int)$currentcanonical,
+            'message' => 'Calificación guardada correctamente.',
+        ]);
     }
 
     redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
         'courseid' => $postcourseid,
         'saved' => 1
     ]));
+    } finally {
+        // Liberación garantizada del lock en todo camino (éxito, conflicto, excepción, exit).
+        $lock->release();
+    }
 }
 
 // Guardado de notas de período (cuatrimestre).
@@ -819,6 +1016,26 @@ $forums = $DB->get_records_sql("
     // Obtener calificaciones actuales del Whole forum grading.
     $studentids = array_map('intval', array_keys($students));
 
+    // (RECTIFICATION R3-001) Fuente canónica para el control de concurrencia: forum_grades.grade (raw).
+    // Se lee directamente para la celda TP (display + expected_previous_grade), en lugar de
+    // grade_grades.finalgrade (que puede divergir legítimamente por override). Una única consulta.
+    $forumrawgrades = [];
+
+    if (!empty($studentids)) {
+        [$insql, $inparams] = $DB->get_in_or_equal($studentids, SQL_PARAMS_NAMED, 'stu');
+        $rawrows = $DB->get_records_sql(
+            "SELECT forum, userid, grade
+               FROM {forum_grades}
+              WHERE itemnumber = 1
+                AND userid {$insql}",
+            $inparams
+        );
+
+        foreach ($rawrows as $rawrow) {
+            $forumrawgrades[(int)$rawrow->forum][(int)$rawrow->userid] = $rawrow->grade;
+        }
+    }
+
     foreach ($forums as $forum) {
         $forumgradevalues[$forum->id] = [];
 
@@ -861,7 +1078,7 @@ $forums = $DB->get_records_sql("
             }
 
             $row['links'][$forum->id] = $links;
-            $row['grades'][$forum->id] = $forumgradevalues[$forum->id][$student->id] ?? null;
+            $row['grades'][$forum->id] = $forumrawgrades[$forum->id][$student->id] ?? null;
         }
 
         $report_data[] = $row;
@@ -1474,6 +1691,7 @@ $currentuser = fullname($USER);
                         'notgradable'  => 'El foro no tiene habilitada la calificación del foro completo.',
                         'invalid'      => 'La nota debe ser un número entero.',
                         'range'        => 'La nota está fuera del rango permitido.',
+                        'conflict'     => 'La nota cambió desde que cargaste la página. No se guardó. Recargá y volvé a intentarlo.',
                         'save'         => 'No se pudo guardar la calificación. Intentalo nuevamente.',
                     ];
                     echo isset($grademessages[$gradeerror]) ? $grademessages[$gradeerror] : 'No se pudo guardar la calificación. Revisá los datos ingresados.';
@@ -1524,7 +1742,7 @@ $currentuser = fullname($USER);
                                     $gradevalue = '';
 
                                     if ($currentgrade !== null && $currentgrade !== false) {
-                                        $gradevalue = format_float($currentgrade, 0, false);
+                                        $gradevalue = reporte_tp_canonical_grade($currentgrade);
                                     }
 
                                     $isgradable = !empty($forum->grade_forum) && (float)$forum->grade_forum > 0;
@@ -1551,6 +1769,7 @@ $currentuser = fullname($USER);
                                             <input type="hidden" name="courseid" value="<?php echo (int)$courseid; ?>">
                                             <input type="hidden" name="forumid" value="<?php echo (int)$forum->id; ?>">
                                             <input type="hidden" name="userid" value="<?php echo (int)$data['userid']; ?>">
+                                            <input type="hidden" name="expected_previous_grade" value="<?php echo s($gradevalue); ?>">
 
                                             <input type="number"
                                                    class="grade-input"
