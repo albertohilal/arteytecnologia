@@ -1054,3 +1054,74 @@ PRODUCTION_IMPACT   = NONE
 
 IMPLEMENTATION_AUTHORIZED = NO
 ```
+
+## SDD_SESSION_BOOTSTRAP — NEW_SESSION DYNAMIC TEST + VERIFICATION (2026-08-22)
+
+```text
+CHANGE      = session-bootstrap (Bootstrap obligatorio de nueva sesión OpenCode)
+EXECUTION   = VERIFICATION + DOCUMENT_CURRENT_STATE (read-only + documentation only)
+EXECUTED_BY = gentle-orchestrator (this NEW_SESSION)
+
+NEW_SESSION_TEST             = PASS
+PREFLIGHT_AUTO_TRIGGER       = PASS
+INTERACTIVE_AUTOMATIC_RESULT = PASS
+ENGRAM_RESULT                = PASS
+SESSION_PREFLIGHT_GATE_RESULT = PASS
+DOUBLE_PREFLIGHT_CHECK       = PASS
+
+IMPLEMENTATION_STATUS = COMPLETE
+  LAYER 1  ~/.config/opencode/plugins/session-bootstrap.ts  = in place, functioning
+           (GATE_RULE observed injected into this session's system prompt)
+  LAYER 2  ~/.config/opencode/opencode.json prompt          = in place, resolves S1-S4
+
+ENGRAM_STATE_RECOVERY_INCONSISTENCY = YES (apparent, not a data defect)
+ENGRAM_INCONSISTENCY_ROOT_CAUSE =
+  coexistence of multiple valid records (spec #130 / design #131 / judgment-day #133 /
+  apply #134 / verify #136) + spec #130 SPECIFICATION_STATUS authored as
+  DRAFT_AWAITING_DESIGN (18:54) and never back-updated after design approval (19:13)
+  and implementation (20:20+). All 7 observations state=active (no needs_review).
+  NOT: stale observation / Engram ranking / missing persistence.
+
+CONCURRENCY_INCIDENT_STATUS = RESOLVED
+CURRENT_OPENCODE_CONFIG_STATUS = MATCHES_EXPECTED_IMPLEMENTATION
+  opencode.json = valid JSON, 65385 B, sha256 df05cc63... (matches recorded stable hash)
+  concurrent LAYER-2 variant accepted as canonical (S1-S4 resolved)
+  backups preserved: opencode.json.bak-20260821-session-bootstrap(-impl) (60842 B each)
+
+FILES_CHANGED_DURING_THIS_VERIFICATION = docs/09-HANDOFF/CURRENT-STATE.md (documentation only)
+SESSION_BOOTSTRAP_FILES = GLOBAL_CONFIG (outside repo):
+  ~/.config/opencode/plugins/session-bootstrap.ts
+  ~/.config/opencode/opencode.json (+ .bak backups)
+PROJECT_REPOSITORY_FILES = NONE (session-bootstrap made zero repo changes)
+GLOBAL_CONFIG_FILES = same as SESSION_BOOTSTRAP_FILES
+MOODLE_PERIOD_GRADING_PREEXISTING_CHANGES =
+  M moodle/reportes/reporteTPporCurso.php (+212/-51, unstaged, preexisting UNIT-5A)
+  ?? AUXILIAR/ (untracked, never versioned by Git)
+
+DATABASE_CHANGED  = NO
+DOCKER_CHANGED    = NO
+MOODLE_CHANGED    = NO
+PRODUCTION_IMPACT = NONE
+
+GIT_STATUS = branch feature/copia-local-moodle · HEAD 2591717 (local==remote)
+  uncommitted: reporteTPporCurso.php (preexisting) + AUXILIAR/ (preexisting)
+  no repo change attributable to session-bootstrap or this verification
+
+VERIFICATION_RESULT = PASS
+DOCUMENT_CURRENT_STATE = COMPLETED
+
+REMAINING_RISKS =
+  (1) LAYER 2 refusal-to-operate is prompt-compliance dependent (best-effort; design RISKS(1))
+  (2) RESOLVED — spec #130 status field rectified (now terminal COMPLETED, Engram obs #139)
+  (3) opencode.json is shared mutable state — re-verify hash/anchors before any future write
+  (4) post-compaction re-bootstrap path (acceptance criterion 6) not yet dynamically tested
+
+RECTIFICATION_REQUIRED = NO (completed 2026-08-22, Engram obs #139)
+RECTIFICATION_SCOPE =
+  advance spec #130 SPECIFICATION_STATUS (DRAFT_AWAITING_DESIGN → terminal
+  DESIGN_APPROVED_AND_IMPLEMENTED) + reconciliation note; Engram-only (mem_update obs #130)
+NEXT_SDD_PHASE = NONE
+
+GIT_CHECKPOINT_STATUS = AWAITING_AUTHORIZATION
+CLOSURE_STATUS = READY_FOR_GIT_CHECKPOINT
+```
