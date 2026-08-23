@@ -523,8 +523,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'savegrade') {
 
     $coursecontext = context_course::instance($course->id);
 
+    // (RECTIFICATION R5) Lock idempotente: se libera como máximo una vez, y SIEMPRE
+    // antes de cualquier salida terminal (JSON async, redirect, exit). El helper es
+    // seguro cuando el lock aún no fue adquirido (null) o cuando get_lock() falló (false).
+    $lock = null;
+
+    $releaselock = function () use (&$lock): void {
+        if ($lock !== null && $lock !== false) {
+            $lock->release();
+        }
+        $lock = null;
+    };
+
     // Termina la petición con el código de error dado: JSON si es async, redirect si no.
-    $responderror = function (string $code, ?array $extra = null) use ($async, $postcourseid, $forumid, $userid) {
+    $responderror = function (string $code, ?array $extra = null) use ($async, $postcourseid, $forumid, $userid, $releaselock) {
+        $releaselock();
         if ($async) {
             $payload = [
                 'ok' => false,
@@ -794,6 +807,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'savegrade') {
         $responderror('save');
     }
 
+    // (RECTIFICATION R5) Liberar el lock ANTES de la respuesta terminal de éxito.
+    $releaselock();
+
     // Éxito.
     if ($async) {
         reporte_tp_emit_json_response([
@@ -811,8 +827,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'savegrade') {
         'saved' => 1
     ]));
     } finally {
-        // Liberación garantizada del lock en todo camino (éxito, conflicto, excepción, exit).
-        $lock->release();
+        // (RECTIFICATION R5) Liberación idempotente y segura en excepciones; no relanza
+        // ni libera dos veces si un camino terminal ya liberó el lock.
+        $releaselock();
     }
 }
 
@@ -1570,6 +1587,29 @@ $currentuser = fullname($USER);
             color: #666;
         }
 
+        .grade-status {
+            display: inline-block;
+            font-size: 11px;
+            color: #888;
+            white-space: nowrap;
+        }
+
+        .grade-status--saving {
+            color: #b58900;
+        }
+
+        .grade-status--saved {
+            color: #2f8a3a;
+        }
+
+        .grade-status--error {
+            color: #c0392b;
+        }
+
+        .grade-status--conflict {
+            color: #b9770e;
+        }
+
         .grade-readonly {
             margin-top: 6px;
             font-size: 13px;
@@ -1869,6 +1909,7 @@ $currentuser = fullname($USER);
                                             <button type="submit" class="grade-save">Guardar</button>
 
                                             <span class="grade-max">/ <?php echo (int)$forum->grade_forum; ?></span>
+                                            <span class="grade-status" aria-live="polite"></span>
                                         </form>
                                     <?php elseif ($isgradable): ?>
                                         <div class="grade-readonly">
@@ -1944,6 +1985,134 @@ $currentuser = fullname($USER);
     <?php endif; ?>
 
 </main>
+
+<script>
+(function () {
+    'use strict';
+
+    // UNIT-5B: guardado asíncrono de calificación TP (progressive enhancement).
+    // Sin JS el formulario sigue funcionando con el POST+redirect tradicional.
+
+    function setStatus(form, text, stateClass) {
+        var status = form.querySelector('.grade-status');
+        if (!status) {
+            return;
+        }
+        status.textContent = text;
+        status.className = 'grade-status' + (stateClass ? ' ' + stateClass : '');
+    }
+
+    function setButton(form, saving) {
+        var button = form.querySelector('.grade-save');
+        if (!button) {
+            return;
+        }
+        button.disabled = saving;
+        button.textContent = saving ? 'Guardando…' : 'Guardar';
+    }
+
+    function focusInputWithoutScroll(input) {
+        if (!input) {
+            return;
+        }
+        try {
+            input.focus({ preventScroll: true });
+        } catch (err) {
+            input.focus();
+        }
+    }
+
+    document.addEventListener('submit', function (e) {
+        var form = e.target;
+
+        if (!form || form.tagName !== 'FORM' || !form.classList || !form.classList.contains('grade-form')) {
+            return;
+        }
+
+        // Única intercepción: sin JS el navegador hace el POST tradicional.
+        e.preventDefault();
+
+        var formData = new FormData(form);
+        formData.append('async', '1');
+
+        var input = form.querySelector('.grade-input');
+        var expected = form.querySelector('input[name="expected_previous_grade"]');
+
+        setButton(form, true);
+        setStatus(form, '', '');
+
+        fetch(form.getAttribute('action'), {
+            method: 'POST',
+            body: formData,
+            headers: { 'Accept': 'application/json' },
+            credentials: 'same-origin'
+        }).then(function (response) {
+            return response.text().then(function (text) {
+                var data = null;
+                var parsed = false;
+
+                try {
+                    data = JSON.parse(text);
+                    parsed = true;
+                } catch (err) {
+                    data = null;
+                    parsed = false;
+                }
+
+                return { status: response.status, data: data, parsed: parsed };
+            });
+        }).then(function (result) {
+            var data = result.data;
+            var httpStatus = result.status;
+
+            setButton(form, false);
+
+            // SAVED
+            if (result.parsed && data && data.ok === true) {
+                var grade = data.grade;
+                var gradeStr = (grade === null || grade === undefined) ? '' : String(grade);
+
+                if (expected) {
+                    expected.value = gradeStr;
+                }
+                if (input) {
+                    input.value = gradeStr;
+                }
+                setStatus(form, '✓ Guardado', 'grade-status--saved');
+                return;
+            }
+
+            // CONFLICT (ok=false + error=conflict, o HTTP 409)
+            var isConflict = (result.parsed && data && data.ok === false && data.error === 'conflict')
+                || httpStatus === 409;
+
+            if (isConflict) {
+                var currentgrade = (result.parsed && data) ? data.currentgrade : null;
+                var msg;
+
+                if (currentgrade !== null && currentgrade !== undefined) {
+                    msg = 'La nota cambió. Valor actual: ' + currentgrade + '. No se guardó.';
+                } else {
+                    msg = 'La nota cambió desde que cargaste la página. No se guardó.';
+                }
+
+                setStatus(form, msg, 'grade-status--conflict');
+                focusInputWithoutScroll(input);
+                return;
+            }
+
+            // ERROR (cualquier otro ok=false, JSON inválido, etc.)
+            setStatus(form, 'Error al guardar', 'grade-status--error');
+            focusInputWithoutScroll(input);
+        }).catch(function () {
+            // Fallo de red / fetch rechazado.
+            setButton(form, false);
+            setStatus(form, 'Error al guardar', 'grade-status--error');
+            focusInputWithoutScroll(input);
+        });
+    });
+})();
+</script>
 
 </body>
 </html>

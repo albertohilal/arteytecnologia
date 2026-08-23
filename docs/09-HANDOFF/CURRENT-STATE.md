@@ -1380,3 +1380,103 @@ PUSH = NOT_EXECUTED
 UNIT_5A_CLOSURE = READY_FOR_GIT_CHECKPOINT
 NEXT_ACTION = AWAIT USER AUTHORIZATION FOR FINAL UNIT-5A DOCUMENTATION GIT CHECKPOINT
 ```
+
+## UNIT-5B ASYNC_TP_GRADE_SAVE_UI + R1/R5 — FINAL CLOSURE — 2026-08-23
+
+```text
+PROJECT = arteytecnologia.com.ar (Moodle local)
+TASK = DOCUMENT_CURRENT_STATE (cierre técnico verificado de UNIT-5B + R1 + R5)
+ENVIRONMENT = LOCAL_ONLY
+
+=== UNIT-5B — ASYNC_TP_GRADE_SAVE_UI ===
+UNIT_5B_IMPLEMENTATION = VERIFIED_PASS
+IMPLEMENTATION = COMPLETED
+STATIC_VERIFICATION = PASS
+DYNAMIC_VERIFICATION = PASS
+END_TO_END_VERIFICATION = PASS
+DATABASE_VERIFICATION = PASS
+UNIT_5B_CLOSURE = READY_FOR_GIT_CHECKPOINT
+  (NO se declara CLOSED_SUCCESS todavía; reservado para después del commit/push verificado)
+
+=== UNIT-5B RECTIFICATION-R1 ===
+ROOT_CAUSE = el formulario contiene <input type="hidden" name="action" value="savegrade"> y la
+  named property `form.action` quedó shadoweada por ese control.
+EFECTO = fetch(form.action, ...) posteaba a /reportes/[object HTMLInputElement]
+  (access log: POST /reportes/[object%20HTMLInputElement]).
+RESULTADO = el backend savegrade no se ejecutaba y la UI mostraba "Error al guardar".
+RECTIFICATION = fetch(form.action, ...) → fetch(form.getAttribute('action'), ...)
+VERIFICATION = REQUEST_PATH correcto /reportes/reporteTPporCurso.php · HTTP 200 · application/json ·
+  ACTION_SHADOWING_RECURRED = NO
+R1_DYNAMIC_VERIFICATION = PASS
+
+=== UNIT-5A RECTIFICATION-R5 ===
+ROOT_CAUSE = el lock \core\lock se liberaba únicamente desde `finally`; las respuestas terminales
+  JSON/redirect usaban exit/redirect y el lock quedaba sin liberar.
+EVIDENCIA PREVIA = JSON de éxito seguido por "A lock was created but not released" → contaminaba la
+  respuesta → JSON.parse: unexpected non-whitespace character after JSON data → la nota sí se escribía
+  pero UNIT-5B mostraba falso "Error al guardar".
+RECTIFICATION = helper idempotente $releaselock + liberación antes de toda respuesta terminal +
+  finally idempotente de seguridad.
+INVARIANTES PRESERVADAS = lock lógico por forumid/userid · optimistic concurrency · API oficial
+  store_grade_from_formdata() · transaction · in-transaction readback · post-commit readback ·
+  logical rollback · R4 rollback verification.
+VERIFICATION = LOCK_NOT_RELEASED_ERROR_COUNT_FINAL_RETEST = 0 · JSON_TRAILING_CONTENT = NO ·
+  PHP_WARNING = NO · HTML_AFTER_JSON = NO
+R5_DYNAMIC_VERIFICATION = PASS
+
+=== FINAL CONTROLLED RETEST ===
+ENVIRONMENT = LOCAL
+courseid = 15 · userid = 141 (Ruth Daniela Carceles) · forumid = 158 · grade_item_id = 64 · TP-001-01 - Artistas multimedia
+FLUJO = 9 → 8 → 9
+
+WRITE 9→8: ASYNC_SAVED=PASS · FULL_PAGE_RELOAD=NO · expected_previous_grade 9→8
+  DB temporal: forum_grades=8 · grade_grades=8 · override=0
+  HTTP: POST /reportes/reporteTPporCurso.php · 200 · application/json · JSON puro ok=true grade=8 previousgrade=9
+
+WRITE 8→9: ASYNC_SAVED=PASS · FULL_PAGE_RELOAD=NO · expected_previous_grade 8→9
+  DB final: forum_grades=9 · grade_grades=9 · override=0
+  HTTP: POST /reportes/reporteTPporCurso.php · 200 · application/json · JSON puro ok=true grade=9 previousgrade=8
+
+=== BASELINE FINAL ===
+FINAL_FORUM_COUNT = 99
+FINAL_GRADEBOOK_COUNT = 99
+FINAL_MATCH_COUNT = 99
+FINAL_MISMATCH_COUNT = 0
+FINAL_CHANGED_GRADE_COUNT = 0
+PRE_TEST_CANONICAL_CHECKSUM = c6774611c118a23ce0015555ca9aa09bdd1c37966f2721d4dd26222d7826bd56
+POST_TEST_CANONICAL_CHECKSUM = c6774611c118a23ce0015555ca9aa09bdd1c37966f2721d4dd26222d7826bd56
+CANONICAL_CHECKSUM_RESTORED = YES
+DATABASE_FINAL_STATE = BASELINE_RESTORED
+GRADE_RESIDUAL_CHANGE = NO
+PERIOD_GRADES_CHANGED = NO
+FID_167_185_CHANGED = NO
+
+=== BACKUP / EVIDENCE ===
+FINAL_RETEST_BACKUP_PATH = AUXILIAR/BACKUPS/pre-unit5b-final-retest-20260823-145608.sql
+FINAL_RETEST_BACKUP_SIZE = 30149200 bytes
+FINAL_RETEST_BACKUP_SHA256 = cbabdf3ac8ee521048dd803c2578229c50b5a7f0d45ff27296d1b1efe937fba3
+AUXILIAR permanece fuera de Git.
+
+=== GIT / PRODUCTION STATE ===
+PRODUCTION_IMPACT = NONE
+GATE_PRODUCTION_DEPLOYMENT = AWAITING_AUTHORIZATION
+HEAD = 17ddebdbe4d7728506ebac7c9d26bcf313fed648
+BRANCH = feature/copia-local-moodle
+CODE MODIFIED BUT NOT COMMITTED = moodle/reportes/reporteTPporCurso.php (UNIT-5B + R1 + R5)
+DOCUMENT MODIFIED FOR CLOSURE = docs/09-HANDOFF/CURRENT-STATE.md
+AUXILIAR = untracked / excluded from checkpoint
+GIT CHECKPOINT = NOT_YET_AUTHORIZED
+COMMIT = NOT_AUTHORIZED
+PUSH = NOT_AUTHORIZED
+
+=== ESTADO FINAL ===
+UNIT_5A_RECTIFICATION_R5 = VERIFIED_PASS
+UNIT_5B_RECTIFICATION_R1 = VERIFIED_PASS
+UNIT_5B_IMPLEMENTATION = VERIFIED_PASS
+UNIT_5B_END_TO_END_VERIFICATION = PASS
+UNIT_5B_DATABASE_VERIFICATION = PASS
+UNIT_5B_CLOSURE = READY_FOR_GIT_CHECKPOINT
+  (CLOSED_SUCCESS pendiente de: PREPARE_GIT_CHECKPOINT → AUTHORIZATION → COMMIT → PUSH → VERIFY LOCAL_HEAD=REMOTE_HEAD)
+
+NEXT_ACTION = AWAIT USER REVIEW AND SEPARATE GIT CHECKPOINT AUTHORIZATION (UNIT-5B + R1 + R5)
+```
