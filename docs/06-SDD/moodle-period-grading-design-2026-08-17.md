@@ -1823,3 +1823,248 @@ DATABASE_CHANGED  = NO
 DOCKER_CHANGED    = NO
 PRODUCTION_IMPACT = NONE
 ```
+
+## UNIT-5A RECTIFICATION DESIGN AMENDMENT — 2026-08-23
+
+> Enmienda documental (DESIGN-ONLY). No modifica código. Deriva de la verificación
+> `UNIT_5A_CURRENT_CODE_DISCREPANCY_AUDIT`, la comparación `UNIT_5A_PRODUCTION_REFERENCE_COMPARISON`,
+> el descubrimiento `UNIT_5A_FORUM_SUBMISSION_LINK_DISCOVERY` y la verificación directa de
+> `moodle/version.php`. No reescribe ni reinterpreta los bloques históricos previos.
+
+### A. Runtime Moodle verificado
+
+```text
+RUNTIME_MOODLE_VERSION = 3.9.1+ (Build: 20200814)
+RUNTIME_MOODLE_BRANCH  = 39
+FUENTE_VERIFICADA      = moodle/version.php  ($release = '3.9.1+ (Build: 20200814)', $branch = '39')
+
+- Moodle 4.0.5 sigue siendo la referencia documental principal del proyecto.
+- Toda implementación real DEBE ser compatible con el runtime local 3.9.1+.
+- NO asumir disponibilidad de APIs exclusivas de Moodle 4.x.
+- Cada API utilizada por UNIT-5A debe verificarse compatible con 3.9.1+.
+```
+
+### B. RECTIFICATION R1 — Display de calificaciones (GET_RECORDS_SQL_KEY_COLLISION)
+
+```text
+R1_DISPLAY_QUERY_RECTIFICATION = REQUIRED
+
+GRADE_DISPLAY_ROOT_CAUSE = GET_RECORDS_SQL_KEY_COLLISION
+
+ESTADO DEFECTUOSO ACTUAL:
+  $DB->get_records_sql("SELECT forum, userid, grade FROM {forum_grades} ...")
+  En Moodle DML la PRIMERA columna del SELECT se usa como key del array.
+  Como `forum` NO es único para las combinaciones estudiante × foro:
+
+  EXPECTED_RAW_GRADE_ROWS        = 99
+  ACTUAL_GET_RECORDS_ARRAY_COUNT = 9   (un registro por forum; sobrescritura)
+
+RECTIFICACIÓN MÍNIMA:
+  SELECT id, forum, userid, grade FROM {forum_grades}
+  → forum_grades.id (PK única) es la primera columna.
+
+INVARIANTES (obligatorias):
+  - La fuente canónica sigue siendo forum_grades.grade (R3-001/R3-002).
+  - NO volver a grade_get_grades() como fuente principal de UNIT-5A.
+  - NO alterar la semántica de escritura.
+  - NO recalcular notas; NO modificar gradebook.
+  - NO modificar los 99 valores existentes.
+  - expected_previous_grade debe volver a poblarse correctamente.
+  - La UI debe recuperar las 99 combinaciones estudiante × TP.
+```
+
+### C. RECTIFICATION R2 — "Ver" / entrega del foro
+
+```text
+R2_FORUM_POST_PERMALINK_RECTIFICATION = REQUIRED
+
+FORUM_LINK_ISSUE = PREEXISTING_FUNCTIONAL_LIMITATION
+  (existe idéntico en producción; no es regresión de UNIT-5A)
+
+ROOT CAUSE:
+  El reporte muestra "Ver" SOLO si encuentra una URL http/https literal en
+  forum_posts.message. Consecuencias:
+    - post con texto pero sin URL            → "Sin enlace"
+    - archivo adjunto Moodle                 → "Sin enlace"
+    - imagen/archivo embebido del editor     → "Sin enlace"
+    - entrega válida sin URL externa         → "Sin enlace"
+
+DEFINICIÓN DE ENTREGA (conservadora):
+  FORUM_SUBMISSION_EXISTS(student, forum) =
+    existe al menos un forum_post válido del estudiante (deleted = 0)
+    en una discusión cuyo forum corresponde al TP.
+  La existencia de URL externa NO define una entrega.
+
+PERMALINK PRIMARIO:
+  La consulta de posts debe obtener como mínimo:
+    fp.id AS postid
+    fd.id AS discussionid
+    fp.message
+    fp.created
+  Por estudiante × foro: ordenar por fp.created ASC y tomar el post válido
+  más temprano como referencia primaria.
+
+  PROPOSED_PRIMARY_LINK             = FORUM_POST
+  MULTIPLE_POST_POLICY              = EARLIEST_VALID_POST
+  PRIMARY_LINK_COUNT_PER_STUDENT_FORUM = 1
+
+  PERMALINK = /mod/forum/discuss.php?d=<discussionid>#p<postid>
+  Implementación futura DEBE usar moodle_url (o mecanismo Moodle equivalente)
+  compatible con 3.9.1+.
+
+  Justificación: la página discuss.php expone el hilo completo y Moodle mantiene
+  login, capabilities, visibilidad, archivos, adjuntos, respuestas y access control.
+
+ENLACES EXTERNOS (adicionales):
+  Preservar la extracción actual de URLs http/https como información ADICIONAL.
+  PRIMARY = "Ver" → post Moodle.  ADDITIONAL = URLs externas detectadas.
+  NO usar enlaces externos para decidir si hubo entrega. Evitar duplicados.
+
+ETIQUETA SIN ENTREGA:
+  RECOMMENDED_EMPTY_LABEL = "Sin entrega"
+  Mostrar "Sin entrega" SOLO cuando no exista ningún post válido del estudiante
+  en ese foro. NO mostrarlo cuando exista post aunque no tenga URL, sea solo
+  texto, tenga attachment o archivos embebidos.
+
+FILE API / ADJUNTOS (referencia técnica):
+  ATTACHMENT_FILEAREA = mod_forum / attachment   (itemid = forum_posts.id)
+  EMBEDDED_FILEAREA   = mod_forum / post         (itemid = forum_posts.id)
+  MOODLE_FILE_API_REQUIRED_FOR_PRIMARY_FIX = NO
+  NO diseñar enlaces físicos a moodledata. NO exponer paths internos.
+  Los archivos deben seguir servidos por Moodle/pluginfile.php con su access control.
+```
+
+### D. RECTIFICATION R3 — Target user scope
+
+```text
+R3_TARGET_USER_SCOPE_RECTIFICATION = REQUIRED
+TARGET_USER_SCOPE_REQUIRED = YES
+
+ESTADO ACTUAL: valida matriculación (is_enrolled) y permisos del GRADER,
+pero NO garantiza que el userid target sea un estudiante calificable.
+
+DISEÑO: el target debe pertenecer al conjunto de estudiantes calificables del curso.
+Debe RECHAZARSE como target:
+  - editingteacher / teacher / manager / siteadmin;
+  - usuario no matriculado;
+  - usuario fuera del conjunto de estudiantes mostrados/calificables.
+
+Preferir reutilizar UNA función/criterio único y consistente con la selección de
+estudiantes del reporte. NO depender silenciosamente de roleid = 5 sin justificar
+compatibilidad/configuración. Si el Design mantiene roleid=5 como baseline histórico,
+documentar su riesgo y preferir validación semántica por rol shortname / capability /
+conjunto calculado, compatible con Moodle 3.9.1+.
+```
+
+### E. RECTIFICATION R4 — Logical rollback (doble read-back + critical failure)
+
+```text
+R4_LOGICAL_ROLLBACK_DOUBLE_READBACK = REQUIRED
+R4_CRITICAL_FAILURE_PATH            = REQUIRED
+
+FLUJO A MANTENER (design actual):
+  official Moodle API → lock → transaction → in-transaction read-back → commit
+  → post-commit read-back.
+
+SI post-commit falla:
+  logical rollback del TARGET únicamente, restaurando el valor original vía API oficial.
+
+AGREGAR OBLIGATORIAMENTE:
+  POST_ROLLBACK_READBACK_FORUM_GRADES  = REQUIRED
+  POST_ROLLBACK_READBACK_GRADE_GRADES  = REQUIRED
+  Ambos DEBEN coincidir exactamente con el valor original.
+
+SI cualquiera falla:
+  CRITICAL_ROLLBACK_FAILURE = YES
+  El sistema debe: detener ejecución; NO declarar rollback exitoso; NO continuar
+  con otras escrituras; reportar target exacto; preservar evidencia; requerir
+  intervención/autorización.
+  NO ejecutar full DB restore automáticamente.
+```
+
+### F. Atomicidad / límites
+
+```text
+DATABASE_TRANSACTION_COVERS_ALL_MOODLE_SIDE_EFFECTS = NO
+
+La API Moodle puede producir side effects fuera de la transacción SQL local.
+Por lo tanto el Design DEBE mantener:
+  - verificación dentro de transacción;
+  - verificación post-commit;
+  - rollback lógico por API;
+  - doble read-back del rollback.
+NO prometer atomicidad completa que Moodle/API no garantiza.
+```
+
+### G. Frontera UNIT-5A / UNIT-5B
+
+```text
+UNIT-5A = SAFE_TP_GRADE_BACKEND
+UNIT-5B = ASYNC_TP_GRADE_SAVE_UI
+
+R1 / R3 / R4 pertenecen a UNIT-5A.
+R2 es una rectificación funcional del mismo reporte con GRADE_BACKEND_IMPACT = NONE.
+
+R2 puede implementarse junto con la próxima rectificación del mismo archivo para
+minimizar cambios y checkpoints, SIN alterar la frontera conceptual UNIT-5A/5B.
+NO introducir todavía fetch/AJAX/JavaScript de UNIT-5B.
+```
+
+### H. Criterios de aceptación rectificados
+
+```text
+DISPLAY:
+  - RAW_GRADE_ROWS       = 99
+  - DISPLAY_GRADE_MAPPING = 99
+  - La UI muestra las notas existentes.
+  - target userid=34 / forumid=158 muestra 7 antes del test.
+  - expected_previous_grade = 7 para el target.
+
+FORUM LINK:
+  - si existe post válido → "Ver";
+  - "Ver" abre el post Moodle;
+  - post sin URL externa sigue mostrando "Ver";
+  - adjunto/editor embebido NO provoca "Sin entrega";
+  - "Sin entrega" SOLO sin post;
+  - URLs externas se preservan como adicionales.
+
+TARGET SCOPE:
+  - student target permitido;
+  - grader/admin target rechazado;
+  - target no matriculado rechazado.
+
+ROLLBACK:
+  - restore original vía API;
+  - forum_grades == original;
+  - grade_grades == original;
+  - si no coincide → CRITICAL_ROLLBACK_FAILURE.
+
+BASELINE:
+  - 99 notas protegidas;
+  - no silent overwrite;
+  - no period grade changes;
+  - no out-of-scope forum changes.
+```
+
+### I. Historial / trazabilidad
+
+```text
+FUENTES DE ESTA ENMIENDA:
+  - UNIT_5A_CURRENT_CODE_DISCREPANCY_AUDIT
+  - UNIT_5A_PRODUCTION_REFERENCE_COMPARISON
+  - UNIT_5A_FORUM_SUBMISSION_LINK_DISCOVERY
+  - Verificación directa de moodle/version.php
+
+NO se declara que producción use el backend seguro.
+Producción sirve únicamente como referencia funcional de lectura/display.
+El backend de escritura seguro (store_grade_from_formdata + lock + transacción +
+read-back + rollback) se mantiene OBLIGATORIAMENTE y NO se copia de producción.
+
+ESTADO VIGENTE (sin cambios):
+  CODE_IMPLEMENTATION      = COMPLETED  (commit cf68404)
+  DYNAMIC_VERIFICATION     = NOT_COMPLETED
+  CONTROLLED_GRADE_TEST    = PAUSED_BEFORE_FIRST_WRITE
+  GRADE_WRITE_EXECUTED     = NO
+  UNIT-5B_IMPLEMENTATION   = NOT_AUTHORIZED
+```
+```
