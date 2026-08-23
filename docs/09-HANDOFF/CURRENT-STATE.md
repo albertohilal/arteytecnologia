@@ -1125,3 +1125,155 @@ NEXT_SDD_PHASE = NONE
 GIT_CHECKPOINT_STATUS = AWAITING_AUTHORIZATION
 CLOSURE_STATUS = READY_FOR_GIT_CHECKPOINT
 ```
+
+## UNIT-5A RECTIFICATION IMPLEMENTATION — CURRENT STATE — 2026-08-23
+
+```text
+PROJECT           = arteytecnologia.com.ar (Moodle local)
+TASK              = UNIT_5A_RECTIFICATION_DOCUMENT_CURRENT_STATE
+PHASE             = DOCUMENT_CURRENT_STATE
+ENVIRONMENT       = LOCAL_ONLY
+AUTHORIZATION     = EXPLICIT
+BASELINE_HEAD     = 84b7b47efa13e73fef660263b499d12d2943b685
+BRANCH            = feature/copia-local-moodle
+FILES             = moodle/reportes/reporteTPporCurso.php (implementación R1–R4 ya realizada)
+                    docs/09-HANDOFF/CURRENT-STATE.md (este documento)
+
+=== R1 — DISPLAY DE CALIFICACIONES ===
+R1_DISPLAY_QUERY_RECTIFICATION = IMPLEMENTED
+ROOT_CAUSE_R1 = GET_RECORDS_SQL_KEY_COLLISION
+CHANGE_IMPLEMENTED = SELECT id, forum, userid, grade FROM {forum_grades}
+FORUM_GRADES_CANONICAL_SOURCE = forum_grades.grade
+TP_CELL_SOURCE = forum_grades.grade (NO se volvió a grade_get_grades() para poblar la celda TP)
+EXPECTED_RAW_GRADE_ROWS = 99
+DISPLAY_GRADE_MAPPING = 99
+VISUAL_R1_VERIFICATION = PASS  (la UI vuelve a mostrar las calificaciones existentes en las celdas)
+NOTE = la evidencia gráfica del usuario NO verificó específicamente la fila userid=34/forumid=158;
+       ese target fue revalidado por DB READ-ONLY (userid=34, forumid=158, grade=7)
+
+=== R2 — "VER" / ENTREGA DE FORO ===
+R2_FORUM_POST_PERMALINK = IMPLEMENTED
+FORUM_LINK_ISSUE = PREEXISTING_FUNCTIONAL_LIMITATION
+SEMANTICS =
+  - post válido existente → "Ver"
+  - "Ver" usa permalink Moodle al post
+  - URLs externas se preservan como adicionales
+  - sin post válido → "Sin entrega"
+MULTIPLE_POST_POLICY = EARLIEST_VALID_POST
+VISUAL_R2_VERIFICATION = PASS
+EVIDENCE = "Ver" abrió correctamente un post Moodle local vía /mod/forum/discuss.php?d=1828#p2115
+PRODUCTION_HAS_SAME_PREEXISTING_LIMITATION = YES
+GRADE_BACKEND_IMPACT_R2 = NONE
+
+=== R3 — TARGET USER SCOPE ===
+R3_TARGET_USER_SCOPE = IMPLEMENTED
+STATIC_VERIFICATION = PASS
+ADVERSARIAL_REVIEW = PASS
+SEMANTICS = savegrade acepta como target únicamente estudiante calificable.
+REJECTS = teacher | editingteacher | manager | siteadmin | no matriculado | target sin rol student
+PROTECTION =
+  - reutiliza criterio semántico de roles (reporte_tp_role_flags)
+  - no depende exclusivamente de roleid=5
+  - mantiene permisos/capabilities del grader
+  - mantiene forum/course scope
+  - mantiene VALID_GRADED_TP
+DYNAMIC_WRITE_TEST = NOT_EXECUTED (no se afirmó prueba dinámica de escritura para R3)
+
+=== R4 — ROLLBACK LÓGICO VERIFICADO ===
+R4_LOGICAL_ROLLBACK_DOUBLE_READBACK = IMPLEMENTED
+R4_CRITICAL_ROLLBACK_FAILURE_PATH = IMPLEMENTED
+STATIC_VERIFICATION = PASS
+ADVERSARIAL_REVIEW = PASS
+PRESERVED =
+  official forum API
+  + core lock
+  + optimistic concurrency
+  + transaction
+  + in-transaction read-back
+  + post-commit read-back
+ADDED =
+  logical rollback vía API oficial
+  → post-rollback read-back forum_grades
+  → post-rollback read-back grade_grades
+  → comparación contra estado original
+  → CRITICAL_ROLLBACK_FAILURE si restauración no es exacta
+R4_DYNAMIC_FAILURE_INJECTION_TEST = NOT_EXECUTED
+
+=== BACKEND SEGURO PRESERVADO ===
+OFFICIAL_FORUM_API_PRESERVED = YES
+API = mod_forum\grades\forum_gradeitem::store_grade_from_formdata()
+OPTIMISTIC_CONCURRENCY_PRESERVED = YES
+LOCK_PRESERVED = YES
+DIRECT_WRITE_FORUM_GRADES = NO
+DIRECT_WRITE_GRADE_GRADES = NO
+UNIT_5B_IMPLEMENTED = NO  (no fetch/AJAX/autosave de UNIT-5B)
+
+=== RUNTIME ===
+RUNTIME_MOODLE_VERSION = 3.9.1+ (Build: 20200814)
+RUNTIME_MOODLE_BRANCH = 39
+MOODLE_3_9_1_COMPATIBILITY = PASS
+PHP_LINT = PASS  (ejecutado vía contenedor local arteytecnologia_web con PHP 7.4; el host no dispone del binario php)
+
+=== BASELINE DB PROTEGIDO (READ-ONLY) ===
+FORUM_GRADES_NON_NULL_COUNT = 99
+GRADE_GRADES_NON_NULL_COUNT = 99
+MATCH_COUNT = 99
+MISMATCH_COUNT = 0
+TARGET_USERID = 34
+TARGET_FORUMID = 158
+TARGET_GRADE = 7
+GRADE_WRITE_EXECUTED = NO
+DATABASE_CHANGED_BY_RECTIFICATION = NO
+
+=== VERIFICACIÓN VISUAL (USUARIO) ===
+USER_VISUAL_VERIFICATION =
+  R1 = PASS — calificaciones existentes nuevamente visibles
+  R2 = PASS — "Ver" visible para publicaciones y navegación correcta al post Moodle
+  EMPTY_LABEL = "Sin entrega"
+R2_MULTIPLE_VER_LABELS = LOW / UX_NON_BLOCKING
+  (R2 puede mostrar más de un "Ver" en una celda: permalink primario + URLs externas.
+   No se modifica en esta tarea; no ampliar scope.)
+
+=== PRUEBA CONTROLADA ===
+CONTROLLED_GRADE_TEST = PAUSED_BEFORE_FIRST_WRITE
+AUTHORIZED_TEST_TARGET =
+  userid = 34
+  forumid = 158
+  grade_item_id = 64
+  original = 7
+7_TO_8_EXECUTED = NO
+8_TO_7_EXECUTED = NO
+GRADE_WRITE_EXECUTED = NO
+CONTROLLED_GRADE_TEST_REQUIRES_NEW_AUTHORIZATION = YES
+  (la autorización anterior estaba asociada al backend previo cf68404; el código cambió desde entonces)
+
+=== ESTADO SDD ===
+UNIT_5A_RECTIFICATION_DISCOVERY = COMPLETED
+UNIT_5A_RECTIFICATION_DESIGN = COMPLETED
+UNIT_5A_RECTIFICATION_DESIGN_CHECKPOINT = CLOSED_SUCCESS
+UNIT_5A_RECTIFICATION_IMPLEMENTATION = COMPLETED
+UNIT_5A_RECTIFICATION_STATIC_VERIFICATION = PASS
+UNIT_5A_RECTIFICATION_VISUAL_VERIFICATION = PASS
+UNIT_5A_RECTIFICATION_GIT_CHECKPOINT = AWAITING_AUTHORIZATION
+UNIT_5A_CONTROLLED_GRADE_TEST = PAUSED_BEFORE_FIRST_WRITE
+UNIT_5A_CLOSURE = IN_PROGRESS
+UNIT_5B = NOT_IMPLEMENTED
+GATE_PRODUCTION_DEPLOYMENT = AWAITING_AUTHORIZATION
+
+=== ROOT CAUSES ===
+ROOT_CAUSE_R1 = get_records_sql() usaba forum como primera columna no única, colapsando 99 filas en 9 claves.
+ROOT_CAUSE_R2 = "Ver" dependía únicamente de URLs http/https literales del mensaje y no de la existencia real de un forum_post.
+ROOT_CAUSE_R3 = savegrade validaba matriculación pero no restringía explícitamente el target a estudiante calificable.
+ROOT_CAUSE_R4 = rollback lógico post-commit no verificaba mediante doble read-back que el estado original hubiera sido restaurado.
+
+=== GIT / CHECKPOINT ===
+GIT_ADD = NOT_EXECUTED
+COMMIT = NOT_EXECUTED
+PUSH = NOT_EXECUTED
+DATABASE_CHANGED = NO
+DOCKER_CHANGED = NO
+MOODLEDATA_CHANGED = NO
+PRODUCTION_IMPACT = NONE
+UNIT_5A_RECTIFICATION_GIT_CHECKPOINT = AWAITING_AUTHORIZATION
+NEXT_ACTION = AWAIT USER REVIEW AND SEPARATE GIT CHECKPOINT AUTHORIZATION
+```

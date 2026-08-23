@@ -407,6 +407,7 @@ function reporte_tp_grade_error_message(string $code): string {
         'range'        => 'La nota está fuera del rango permitido.',
         'conflict'     => 'La nota cambió desde que cargaste la página. No se guardó. Recargá y volvé a intentarlo.',
         'save'         => 'No se pudo guardar la calificación. Intentalo nuevamente.',
+        'critical_rollback_failure' => 'Error crítico: no se pudo revertir la calificación de forma segura. Se requiere intervención del administrador. No se realizaron cambios adicionales.',
     ];
 
     return $messages[$code] ?? 'No se pudo guardar la calificación. Revisá los datos ingresados.';
@@ -566,6 +567,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'savegrade') {
         $responderror('notenrolled');
     }
 
+    // (RECTIFICATION R3) El target debe pertenecer al conjunto de estudiantes calificables
+    // del curso. Se rechaza cualquier rol calificador (teacher/editingteacher/manager/siteadmin)
+    // o usuario sin rol student, reutilizando el MISMO criterio semántico del reporte
+    // (reporte_tp_role_flags), coherente con la selección de estudiantes mostrada.
+    $targetroleflags = reporte_tp_role_flags($coursecontext, (int)$userid);
+
+    if ($targetroleflags['hasgraderrole'] || !$targetroleflags['hasstudentrole']) {
+        $responderror('invaliduser');
+    }
+
     // Solo docentes, managers o administradores pueden calificar.
     if (!$roleflags['caneditreport']) {
         $responderror('nopermission');
@@ -678,6 +689,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'savegrade') {
         return [$fgcanonical, $ggcanonical, $ggoverridden];
     };
 
+    // (RECTIFICATION R4) Snapshot del estado ORIGINAL (forum_grades + grade_grades)
+    // ANTES del write, para poder verificar la restauración exacta en caso de
+    // rollback lógico post-commit. Solo lectura (sin side-effects).
+    [$origfgcanonical, $origggcanonical, $origggoverridden] = $readback();
+
     $transaction = $DB->start_delegated_transaction();
 
     try {
@@ -717,11 +733,62 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'savegrade') {
 
     if (!$readbackokpost) {
         // Rollback lógico únicamente del target mediante API oficial (restaurar valor original).
+        // (RECTIFICATION R4) Después del rollback se re-leen AMBOS orígenes (forum_grades + grade_grades)
+        // y se confirma que volvieron exactamente al estado original. Si la API de rollback lanza
+        // excepción o alguno no coincide → CRITICAL_ROLLBACK_FAILURE (detiene la ejecución).
+        $rollbackfailed = false;
+        $fgrollbackcanonical = null;
+        $ggrollbackcanonical = null;
+        $ggrollbackoverridden = null;
+
         try {
             $rollbackform = (object)['grade' => ($currentcanonical === 'null') ? '' : $currentcanonical];
             $forumgradeitem->store_grade_from_formdata($gradeduser, $grader, $rollbackform);
-        } catch (Exception $ignored) {
-            // El intento de rollback lógico falló; se informa el fallo de todos modos.
+        } catch (Exception $e) {
+            // La API de rollback lanzó excepción: no se puede confirmar la restauración.
+            $rollbackfailed = true;
+        }
+
+        if (!$rollbackfailed) {
+            // Read-back post-rollback: ambos deben coincidir EXACTAMENTE con el original,
+            // respetando la semántica de override existente (si grade_grades.overridden está
+            // activo, la comparación de grade_grades se omite igual que en el read-back actual).
+            [$fgrollbackcanonical, $ggrollbackcanonical, $ggrollbackoverridden] = $readback();
+
+            $rollbackok = ($fgrollbackcanonical === $origfgcanonical)
+                && ($ggrollbackoverridden || $ggrollbackcanonical === $origggcanonical);
+
+            if (!$rollbackok) {
+                $rollbackfailed = true;
+            }
+        }
+
+        if ($rollbackfailed) {
+            // CRITICAL_ROLLBACK_FAILURE: no se pudo restaurar el estado original.
+            // Se detiene la ejecución, NO se declara rollback exitoso, NO se realizan más
+            // escrituras y se preserva evidencia vía logs. Requiere intervención/autorización.
+            $evidence = json_encode([
+                'event' => 'CRITICAL_ROLLBACK_FAILURE',
+                'courseid' => $postcourseid,
+                'forumid' => $forumid,
+                'userid' => $userid,
+                'original_forum_grades' => $origfgcanonical,
+                'original_grade_grades' => $origggcanonical,
+                'original_grade_grades_overridden' => $origggoverridden,
+                'readback_forum_grades' => $fgrollbackcanonical,
+                'readback_grade_grades' => $ggrollbackcanonical,
+                'readback_grade_grades_overridden' => $ggrollbackoverridden,
+            ]);
+
+            error_log('[reporteTPporCurso] ' . $evidence);
+            trigger_error(
+                'CRITICAL_ROLLBACK_FAILURE forumid=' . $forumid . ' userid=' . $userid . ' ' . $evidence,
+                E_USER_WARNING
+            );
+
+            $responderror('critical_rollback_failure', [
+                'critical_rollback_failure' => true,
+            ]);
         }
 
         $responderror('save');
@@ -1024,7 +1091,7 @@ $forums = $DB->get_records_sql("
     if (!empty($studentids)) {
         [$insql, $inparams] = $DB->get_in_or_equal($studentids, SQL_PARAMS_NAMED, 'stu');
         $rawrows = $DB->get_records_sql(
-            "SELECT forum, userid, grade
+            "SELECT id, forum, userid, grade
                FROM {forum_grades}
               WHERE itemnumber = 1
                 AND userid {$insql}",
@@ -1056,17 +1123,32 @@ $forums = $DB->get_records_sql("
             'apellido' => s($student->lastname),
             'nombre'   => s($student->firstname),
             'links'    => [],
+            'hassubmission' => [],
             'grades'   => []
         ];
 
         foreach ($forums as $forum) {
             $links = [];
+            $haspost = false;
 
-            $msgs = $DB->get_records_sql("\n                SELECT fp.id, fp.message\n                FROM {forum_discussions} fd\n                JOIN {forum_posts} fp ON fp.discussion = fd.id\n                WHERE fd.forum = :fid\n                  AND fp.userid = :uid\n                ORDER BY fp.created ASC\n            ", [
+            // (RECTIFICATION R2) Posts válidos (deleted = 0) del estudiante en este foro,
+            // en discusiones pertenecientes al TP. Ordenados por fecha de creación.
+            $msgs = $DB->get_records_sql("\n                SELECT fp.id AS postid, fd.id AS discussionid, fp.message, fp.created\n                FROM {forum_discussions} fd\n                JOIN {forum_posts} fp ON fp.discussion = fd.id\n                WHERE fd.forum = :fid\n                  AND fp.userid = :uid\n                  AND fp.deleted = 0\n                ORDER BY fp.created ASC\n            ", [
                 'fid' => $forum->id,
                 'uid' => $student->id
             ]);
 
+            // Enlace primario: post Moodle más temprano (MULTIPLE_POST_POLICY = EARLIEST_VALID_POST).
+            // La existencia de una URL externa NO define una entrega; sí lo hace un post válido.
+            if (!empty($msgs)) {
+                $firstmsg = reset($msgs);
+                $links[] = (new moodle_url('/mod/forum/discuss.php', [
+                    'd' => (int)$firstmsg->discussionid
+                ], 'p' . (int)$firstmsg->postid))->out(false);
+                $haspost = true;
+            }
+
+            // URLs externas http/https como enlaces ADICIONALES, deduplicadas.
             foreach ($msgs as $msg) {
                 if (preg_match_all('/https?:\/\/[^\s"\'<>]+/i', $msg->message, $matches)) {
                     foreach ($matches[0] as $url) {
@@ -1078,6 +1160,7 @@ $forums = $DB->get_records_sql("
             }
 
             $row['links'][$forum->id] = $links;
+            $row['hassubmission'][$forum->id] = $haspost;
             $row['grades'][$forum->id] = $forumrawgrades[$forum->id][$student->id] ?? null;
         }
 
@@ -1693,6 +1776,7 @@ $currentuser = fullname($USER);
                         'range'        => 'La nota está fuera del rango permitido.',
                         'conflict'     => 'La nota cambió desde que cargaste la página. No se guardó. Recargá y volvé a intentarlo.',
                         'save'         => 'No se pudo guardar la calificación. Intentalo nuevamente.',
+                        'critical_rollback_failure' => 'Error crítico: no se pudo revertir la calificación de forma segura. Se requiere intervención del administrador. No se realizaron cambios adicionales.',
                     ];
                     echo isset($grademessages[$gradeerror]) ? $grademessages[$gradeerror] : 'No se pudo guardar la calificación. Revisá los datos ingresados.';
                 ?>
@@ -1738,6 +1822,7 @@ $currentuser = fullname($USER);
                             <?php foreach ($forums as $forum): ?>
                                 <?php
                                     $links = $data['links'][$forum->id] ?? [];
+                                    $hassubmission = !empty($data['hassubmission'][$forum->id]);
                                     $currentgrade = $data['grades'][$forum->id] ?? null;
                                     $gradevalue = '';
 
@@ -1750,14 +1835,14 @@ $currentuser = fullname($USER);
                                 ?>
 
                                 <td class="forum-cell">
-                                    <?php if (!empty($links)): ?>
+                                    <?php if ($hassubmission): ?>
                                         <?php foreach ($links as $url): ?>
                                             <a href="<?php echo s($url); ?>"
                                                target="_blank"
                                                rel="noopener noreferrer">Ver</a><br>
                                         <?php endforeach; ?>
                                     <?php else: ?>
-                                        <span class="no-links">Sin enlace</span>
+                                        <span class="no-links">Sin entrega</span>
                                     <?php endif; ?>
 
                                     <?php if ($isgradable && $cangradeforum): ?>
