@@ -1480,3 +1480,232 @@ UNIT_5B_CLOSURE = READY_FOR_GIT_CHECKPOINT
 
 NEXT_ACTION = AWAIT USER REVIEW AND SEPARATE GIT CHECKPOINT AUTHORIZATION (UNIT-5B + R1 + R5)
 ```
+
+## PRODUCTION DEPLOYMENT — GRADE RECONCILIATION BLOCKER — 2026-08-23
+
+```text
+TASK = PRODUCTION_GRADE_RECONCILIATION_SPECIFICATION + DESIGN (documentación)
+ENVIRONMENT = DOCUMENTATION_ONLY (producción NO tocada)
+
+HALLAZGO (PRODUCTION READ-ONLY PRECHECK):
+  PRODUCTION_GRADING_MODEL_CURRENT = LEGACY_GRADE_GRADES_ONLY
+  ACTIVE_COURSES = 15 (MedAud-26 / Medios Aud-2026) · 19 (ComplPint26 / T.Comp Pint 2026) · 20 (LVI-2026 / Lenguaje Visual I-2026)
+  HISTORICAL_COURSES = OUT_OF_SCOPE
+  grade_grades.finalgrade NON_NULL = 564 (15:101 · 19:59 · 20:404)
+  forum_grades.grade NON_NULL = 0
+  discussions = 673 · posts = 812 (invariantes)
+
+PROBLEMA:
+  El backend verificado en LOCAL usa mod_forum\grades\forum_gradeitem → forum_grades → Gradebook,
+  pero producción tiene las notas vigentes SOLO en grade_grades.finalgrade (forum_grades vacío).
+
+RESULTADO:
+  PRODUCTION_GRADE_RECONCILIATION_SPECIFICATION = COMPLETED
+  PRODUCTION_GRADE_RECONCILIATION_DESIGN = COMPLETED
+  (docs/06-SDD/production-grade-reconciliation-design-2026-08-23.md)
+  TRANSACTION_BOUNDARY = PER_FORUM · WRITE_API = store_grade_from_formdata · rollback por capas
+  CANONICAL_RENAME_SCOPE = course 15 SOLO (NO 19/20)
+
+GATES:
+  GATE_PRODUCTION_GRADE_RECONCILIATION = AWAITING_AUTHORIZATION  (SUPERSEDED: ver sección RECTIFICATION y LOCAL FIRST)
+  GATE_PRODUCTION_DEPLOYMENT = BLOCKED
+  GATE_PRODUCTION_CONTROLLED_GRADE_WRITE = AWAITING_SEPARATE_AUTHORIZATION
+  GATE_GIT_CHECKPOINT = AWAITING_AUTHORIZATION
+
+NO AUTHORIZATION = NO EXECUTION
+NEXT_ACTION = USER REVIEW FOR PRODUCTION GRADE RECONCILIATION AUTHORIZATION
+```
+
+## PRODUCTION GRADE RECONCILIATION — RECTIFICATION (R1–R10) — 2026-08-23
+
+```text
+TASK = SPECIFICATION + DESIGN RECTIFICATION (documentación)
+REVISION_EXTERNA = 10 DEFECTOS BLOQUEANTES RECTIFICADOS
+
+RECTIFICACIONES CLAVE:
+  R1  FORUM_GRADES_NON_NULL_GRADE_COUNT=0 (NO "vacío"; existen filas placeholder NULL); distinguir UPDATE vs INSERT
+  R2  564 = DISCOVERY (NO constante de migración); SOURCE_SCOPE = FRESH_AUTHORIZED_PRE_RECONCILIATION_DATASET
+  R3  LEGACY_EXACT_LOGICAL_ROLLBACK = NOT_DEMONSTRATED
+  R4  SAFE_WRITE_UNIT = PER_GRADE · STOP_ON_FIRST_FAILURE · SAFE_PARTIAL_RECONCILIATION · ledger obligatorio (R6)
+  R5  FULL_DB_RESTORE solo por corrupción confirmada + autorización explícita
+  R8  TRANSACTION_BOUNDARY = NONE_EXPLICIT (API WRITE + doble read-back + stop-on-failure; no atomicidad falsa)
+  R9  EXISTING_PRODUCTION_GRADE = DATA_TO_PRESERVE (no descartar por desmatriculación)
+  R10 PRODUCTION_MOODLE_VERSION = MUST_BE_VERIFIED + PRODUCTION_API_IMPLEMENTATION_MUST_BE_INSPECTED = YES
+
+IMPLEMENTATION_READY_FOR_AUTHORIZATION = NO
+PRODUCTION_VERSION_VERIFIED = YES (branch 39 · 3.9.1+ Build 20200814 · version 2020061501.07 · VERSION_PARITY=YES)
+
+LOCAL_FIRST_EXISTING_EVIDENCE_SUFFICIENT = YES
+MINIMAL_LEGACY_REHEARSAL_REQUIRED = NO (REDUNDANT_TEST_AVOIDED=YES)
+  (RECOVERY-C + UNIT-5A/5B + inspección core demuestran X/NULL→X/X; grade_update es idempotente sobre el valor;
+   no hay rama distinta por grade_grades ya=X; R3 rollback resuelto por modelo forward-safe R4/R5)
+
+PRE_DEPLOY_CORE_HASH_PARITY_REQUIRED = YES
+
+GATE_PRODUCTION_GRADE_RECONCILIATION = AWAITING_AUTHORIZATION
+GATE_PRODUCTION_DEPLOYMENT = BLOCKED
+NO AUTHORIZATION = NO EXECUTION
+```
+
+## AUTHORIZATION BOUNDARIES — PRE-AUTHORIZATION FINAL REVIEW — 2026-08-23
+
+```text
+AUTHORIZATION_BOUNDARY_REVIEW = PASS
+GENERIC_PRODUCTION_AUTHORIZATION_REMOVED = YES
+
+GATE_A = GATE_PRODUCTION_GRADE_RECONCILIATION (AWAITING_AUTHORIZATION)
+  autoriza SOLO: maintenance mode (para la operación) + fresh backup + fresh baseline/dataset
+  + pre-write validations + reconciliación de EXISTING grades (forum_grades NULL→X, grade_grades X→X)
+  + ledger + doble read-back + stop-on-failure + verification 100%.
+  EXCLUYE: renames · deploy PHP · controlled write test · Git commit/push.
+
+GATE_B = GATE_PRODUCTION_DEPLOYMENT (BLOCKED)
+  requiere NUEVA autorización expresa tras GRADE_RECONCILIATION_VERIFICATION=PASS:
+  renames course 15 + verify + backup PHP + deploy PHP + SHA256 + functional + exit maintenance.
+  NO asumir que GATE_A autoriza GATE_B.
+
+GATE_C = GATE_PRODUCTION_CONTROLLED_GRADE_WRITE (AWAITING_SEPARATE_AUTHORIZATION)
+  solo prueba temporal de UNA nota; no forma parte de GATE_A ni GATE_B.
+
+MAINTENANCE_BETWEEN_GATES_POLICY =
+  si reconciliación PASS y GATE_B no autorizado → EXIT MAINTENANCE MODE → STOP
+  (no dejar el sitio en mantenimiento indefinido; deployment futuro requiere nueva ventana).
+
+PRODUCTION_MOODLE_ROOT = /home/iunaorg/public_html/arteytecnologia.com.ar
+PRODUCTION_REPORT_PATH = /home/iunaorg/public_html/arteytecnologia.com.ar/reportes/reporteTPporCurso.php
+PRODUCTION_PHYSICAL_PATH_RESOLVED = YES
+
+GATE_A_EXPECTED_DATABASE_CHANGE = canonicalization de EXISTING grades (academic value change=0)
+GATE_B_EXPECTED_DATABASE_CHANGE = canonical names course 15 + side effects rename API
+
+PRE_DEPLOY_CORE_HASH_PARITY_REQUIRED = YES · EXECUTED = NO
+
+NO AUTHORIZATION = NO EXECUTION
+NEXT_ACTION = USER REVIEW OF GATE_A AUTHORIZATION PACKAGE
+```
+
+## PRODUCTION GRADE RECONCILIATION — GATE_A EXECUTED — 2026-08-24
+
+```text
+PROJECT     = arteytecnologia.com.ar (Moodle producción)
+TASK        = GATE_PRODUCTION_GRADE_RECONCILIATION (GATE_A) — EXECUTED
+PHASE       = AUTHORIZED_IMPLEMENTATION → VERIFICATION → DOCUMENT_RESULT
+ENVIRONMENT = PRODUCTION (https://arteytecnologia.com.ar)
+
+=== AUTORIZACIÓN ===
+GATE_A_AUTHORIZATION = CONSUMED (autorización expresa del usuario)
+
+=== PRECHECK / PARITY (PRE) ===
+PASO_0_SSH_ACCESS          = PASS (desarrolloydisenio-cpanel · iunaorg@sv46.byethost46.org:1394)
+PASO_1_SCOPED_PRECHECK     = PASS (564 grades scoped · 0 blockers)
+PASO_2_CORE_HASH_PARITY    = PASS (4/4 byte-identical LOCAL↔PRODUCCIÓN)
+FRESH_GRADE_COUNT_PRE      = 564 (course 15=101 · 19=59 · 20=404)
+ALL_TARGET_PREVALIDATION   = PASS
+GRADER_USERID              = 2 (site admin) · capability mod/forum:grade 30/30 foros
+
+=== BACKUP ===
+FRESH_BACKUP_RESULT    = PASS
+FRESH_BACKUP_PATH      = AUXILIAR/BACKUPS/GATE-A/production-pre-grade-reconciliation-20260824-094714.sql
+FRESH_BACKUP_SIZE      = 35462217 bytes
+FRESH_BACKUP_SHA256    = e4f2f7e23631a890a2e690e8c402899fb9adc569380237780ea1c2c83630b65e
+FRESH_BACKUP_TIMESTAMP = 20260824-094714 (-03) · dump completed 2026-08-24 08:48:32 (server)
+
+=== RECONCILIACIÓN ===
+WRITE_API = mod_forum\grades\forum_gradeitem::store_grade_from_formdata()
+EXECUTION = PER_FORUM / PER_GRADE / SEQUENTIAL / TRANSACTION_BOUNDARY=NONE_EXPLICIT
+WRITE_ATTEMPT_COUNT           = 564
+WRITE_SUCCESS_COUNT           = 564
+WRITE_FAILURE_COUNT           = 0
+FIRST_FAILURE                 = NONE
+STOP_ON_FIRST_FAILURE_TRIGGERED = NO
+ACADEMIC_VALUE_CHANGED_COUNT  = 0
+LEDGER_PATH = AUXILIAR/GATE-A/production-grade-reconciliation-ledger-20260824-095713.jsonl
+
+=== VERIFICACIÓN 100% ===
+POST_FORUM_GRADES_MATCH_COUNT    = 564
+POST_GRADEBOOK_MATCH_COUNT       = 564
+POST_FORUM_GRADEBOOK_MATCH_COUNT = 564
+POST_MISMATCH_COUNT              = 0
+
+FORUM_GRADES_TOTAL_ROWS_PRE  = 27  → POST = 569 (expected 569)
+FORUM_GRADES_NULL_ROWS_PRE   = 27  → POST = 5   (expected 5)
+FORUM_GRADES_NON_NULL_PRE    = 0   → POST = 564 (expected 564)
+UNEXPECTED_FORUM_GRADE_ROWS        = 0
+UNEXPECTED_NON_NULL_FORUM_GRADES   = 0
+EXPECTED_GRADEBOOK_PLACEHOLDER_SIDE_EFFECT_COUNT = 0
+
+ACADEMIC_SOURCE_CHECKSUM_PRE  = 8c03b79adb1e328a99d63294409097f0c5c0c0214ddcf3a5b1c856171be338f3
+ACADEMIC_SOURCE_CHECKSUM_POST = 8c03b79adb1e328a99d63294409097f0c5c0c0214ddcf3a5b1c856171be338f3 (MATCH)
+GLOBAL_GRADE_GRADES_CHECKSUM_PRE  = ba0dc22eaafd217ef914af514ae35dbc9f5461af0cad6b9477424415d6e6d0dd
+GLOBAL_GRADE_GRADES_CHECKSUM_POST = ba0dc22eaafd217ef914af514ae35dbc9f5461af0cad6b9477424415d6e6d0dd (MATCH)
+NON_TARGET_NONNULL_GRADE_CHANGE       = 0
+UNEXPECTED_NON_NULL_ACADEMIC_GRADE_CHANGE = 0
+GRADE_ITEM_DEFINITIONS_CHANGED = 0 (checksum PRE == POST)
+GRADE_FORUM_CHANGED            = 0 (checksum PRE == POST)
+
+DISCUSSIONS_PRE = 673 · DISCUSSIONS_POST = 673 · UNCHANGED = YES
+POSTS_PRE       = 812 · POSTS_POST       = 812 · UNCHANGED = YES
+
+GRADE_RECONCILIATION_VERIFICATION = PASS (100%)
+SAFE_PARTIAL_RECONCILIATION = N/A (sin fallo · éxito completo)
+FULL_DB_RESTORE_EXECUTED = NO
+
+=== MAINTENANCE ===
+MAINTENANCE_MODE_ENABLED       = YES (--enableold · maintenance_enabled=1)
+MAINTENANCE_MODE_DISABLED_FINAL = YES (maintenance_enabled=0)
+
+=== RESULTADO ===
+Fuente canónica reparada en PRODUCCIÓN: 564 notas existentes de foro pasaron de
+grade_grades.finalgrade a forum_grades.grade vía API oficial Moodle, con doble
+read-back e identidad numérica exacta (SOURCE_PRE = FORUM_POST = GRADEBOOK_POST).
+ACADEMIC_VALUE_CHANGE = 0 · cero writes inesperados · cero side-effects no-académicos.
+
+GATE_PRODUCTION_GRADE_RECONCILIATION   = CLOSED_SUCCESS (consumido)
+GATE_PRODUCTION_DEPLOYMENT             = AWAITING_AUTHORIZATION (desbloqueado)
+GATE_PRODUCTION_CONTROLLED_GRADE_WRITE = AWAITING_SEPARATE_AUTHORIZATION
+
+ROOT_CAUSE (problema resuelto) =
+  producción tenía las notas vigentes SOLO en grade_grades.finalgrade (forum_grades
+  con placeholders NULL), desincronizado del modelo canónico forum_grades → Gradebook
+  que usa el reporteTPporCurso.php verificado en LOCAL.
+
+FILES_CHANGED = docs/09-HANDOFF/CURRENT-STATE.md (append documentation only)
+DATABASE_CHANGED = YES (forum_grades canonicalization 564 notas · academic value change = 0)
+DOCKER_CHANGED = NO · MOODLEDATA_CHANGED = NO · MOODLE_CODE_CHANGED = NO
+GIT_ADD = NOT_EXECUTED · COMMIT = NOT_EXECUTED · PUSH = NOT_EXECUTED
+AUXILIAR nunca stage (backup + baseline + dataset + ledger fuera de Git)
+
+VERIFICATION_RESULT = PASS
+NEXT_ACTION = AWAIT GATE_B (deployment) SEPARATE AUTHORIZATION — NO ejecutar GATE_B/GATE_C
+```
+
+## PRODUCTION GRADE RECONCILIATION — GATE_A RECTIFICATION (Git checkpoint policy) — 2026-08-24
+
+> **RECTIFICACIÓN de estado operativo.** La sección anterior ("GATE_A EXECUTED") declaró
+> `GATE_PRODUCTION_GRADE_RECONCILIATION = CLOSED_SUCCESS` y
+> `GATE_PRODUCTION_DEPLOYMENT = AWAITING_AUTHORIZATION`. Eso fue PREMATURO.
+> Per la política Git obligatoria del proyecto, un cambio importante NO puede cerrarse como
+> `CLOSED_SUCCESS` hasta completar: IMPLEMENT → VERIFY → DOCUMENT_CURRENT_STATE →
+> PREPARE_GIT_CHECKPOINT → USER_AUTHORIZATION → COMMIT → PUSH →
+> VERIFY LOCAL_HEAD=REMOTE_HEAD → CLOSE. La sección anterior se conserva como evidencia
+> histórica del resultado técnico; el estado operativo VIGENTE es el siguiente.
+
+```text
+GATE_A_IMPLEMENTATION           = COMPLETED
+GRADE_RECONCILIATION_VERIFICATION = PASS (100% · 564/564 · 0 fallos · 0 mismatch)
+
+GATE_PRODUCTION_GRADE_RECONCILIATION = CONSUMED_AWAITING_GIT_CHECKPOINT
+GATE_A_CLOSURE                        = AWAITING_GIT_CHECKPOINT
+GATE_PRODUCTION_DEPLOYMENT            = BLOCKED_PENDING_GATE_A_GIT_CHECKPOINT
+GATE_PRODUCTION_CONTROLLED_GRADE_WRITE = AWAITING_SEPARATE_AUTHORIZATION
+
+IMPORTANT_CHANGE_STATUS = AWAITING_GIT_CHECKPOINT
+GATE_GIT_CHECKPOINT     = AWAITING_AUTHORIZATION
+
+Después del futuro commit + push verificados:
+  GATE_A_CLOSURE = CLOSED_SUCCESS
+  GATE_PRODUCTION_DEPLOYMENT = AWAITING_AUTHORIZATION
+  (recién entonces queda desbloqueado GATE_B)
+
+NO ejecutar GATE_B ni GATE_C en este estado.
+```
