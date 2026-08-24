@@ -1122,3 +1122,186 @@ ESTADO SDD:
   GATE_PRODUCTION_GRADE_RECONCILIATION = AWAITING_AUTHORIZATION
   NEXT_ACTION = USER REVIEW FOR PRODUCTION GRADE RECONCILIATION AUTHORIZATION
 ```
+
+---
+
+# SPECIFICATION RECTIFICATION — COURSE-AWARE TP CLASSIFICATION — 2026-08-24
+
+> Rectificación por hallazgo técnico: `REPORT_DEPLOYMENT_COMPATIBILITY = FAIL`
+> (courses 19/20 usan identificadores legacy incompatibles con TP-CEE-NN).
+> DOCUMENTACIÓN / READ-ONLY. NO autoriza implementación.
+
+## Problema (root cause)
+
+```text
+ROOT_CAUSE = CANONICAL_IDENTIFIER_SCOPE_OVERREACH
+  reporte_tp_is_valid_graded_tp() exige parse_tp_identifier().valid (TP-CEE-NN) y se
+  aplica GENÉRICAMENTE a cualquier courseid (listado, setupgrades, savegrade, período,
+  Excel). El modelo TP-CEE-NN fue diseñado SOLO para course 15. Courses 19/20 usan
+  identificadores legacy (TP-EE-N, TP-EE-NN, TP-N) incompatibles → 41 TP legítimos
+  quedarían excluidos (16 en course 19, 25 en course 20; ~21 con notas reales).
+
+LEGACY_REPORT_BEHAVIOR_CONFIRMED = YES
+  (AUXILIAR/BACKUPS/reporteTPporCurso.php: listado = name LIKE 'TP-%', sin parser
+   canónico, sin type='news' explícito. El contrato histórico seguro de 19/20 era
+   "visible forum + name LIKE 'TP-%'".)
+```
+
+## Separación de conceptos (SPECIFICATION)
+
+```text
+REPORTABLE_TP =
+  actividad que DEBE aparecer en el reporte de participación y, cuando grade_forum
+  lo permita, puede mostrar/editar su nota. NO implica derivación de período/encuentro/ordinal.
+
+CANONICAL_PERIOD_TP =
+  actividad que ADEMÁS tiene identificador canónico TP-CEE-NN suficiente para derivar
+  período, encuentro, ordinal y cálculo de nota de período.
+
+REPORTABLE_TP != CANONICAL_PERIOD_TP   (no son sinónimos globales).
+```
+
+## Contrato por curso
+
+```text
+COURSE_15_IDENTIFIER_POLICY = CANONICAL_TP_CEE_NN (STRICT, SIN CAMBIOS)
+  parse_tp_identifier() = STRICT AND UNCHANGED
+  COURSE_15_REPORTABLE_TP = type != news AND canonical parser valid
+  COURSE_15_PERIOD_MODEL = validated model (P1/P2 · Cuatrimestre 1/2)
+  post-renames esperado: VALID_TP = 28 · fid157 = NON_TP/excluded
+
+COURSE_19_IDENTIFIER_POLICY = LEGACY_COMPATIBLE (course-aware)
+COURSE_20_IDENTIFIER_POLICY = LEGACY_COMPATIBLE (course-aware)
+  COURSE_19_20_REPORTABLE_TP = type != news AND name LIKE 'TP-%' (contrato histórico)
+  NO rename de 19/20 · NO parser canonical · NO modelo de período inferido
+
+PARSE_TP_IDENTIFIER_CHANGED = NO
+PARSE_TP_IDENTIFIER_GLOBAL_RELAXATION = NO
+COURSES_19_20_RENAME_REQUIRED = NO
+
+PERIOD_MODEL_EXPLICITLY_SCOPED_TO_COURSE_15 = YES
+PERIOD_MODEL_COURSE_19 = NOT_SPECIFIED (no inventar)
+PERIOD_MODEL_COURSE_20 = NOT_SPECIFIED (no inventar)
+```
+
+## Política de write path y seguridad
+
+```text
+SAVEGRADE_POLICY = REPORTABLE_TP_POLICY (course-aware) + protecciones ya verificadas
+  (forum belongs to course · student target · grader capability · grade_forum > 0 ·
+   official forum API · optimistic concurrency · lock · double read-back · no silent overwrite).
+NUNCA name LIKE 'TP-%' como ÚNICA protección del write path.
+
+SETUPGRADES_SCOPE = COURSE_15_ONLY (conservador)
+  setupgrades cambia grade_forum/grade_items → mayor riesgo; NO setup automático en 19/20.
+  NO ampliar writes por compatibilidad de visualización.
+
+PERIOD_UI_POLICY:
+  COURSE_15: columnas de período habilitadas.
+  COURSES_19_20: listado/nota preservados; columnas de período NO inferidas (ocultar o N/A).
+
+UNKNOWN_COURSE_POLICY = FAIL_SAFE (read-only/report-compatible o explicit unsupported)
+  (no aceptar automáticamente TP-* para writes en courseid desconocido.)
+```
+
+## USER_DECISION_REQUIRED
+
+```text
+AMBIGUOUS_CASE (D3): course 20 fid 277 "TP- 00 -Programa de la asignatura" (type=general,
+  NO news, grade_forum=10, 12 notas). Semánticamente "Programa", pero tipo general + nombre
+  TP-*. Análogo a course 15 fid 157 (type=news) pero con type distinto. → USER_DECISION_REQUIRED.
+```
+
+## Estado
+
+```text
+SPECIFICATION_RECTIFICATION = COMPLETED (2026-08-24)
+REPORTABLE_TP_CONCEPT_SEPARATED = YES
+CANONICAL_PERIOD_TP_CONCEPT_SEPARATED = YES
+LOCAL_IMPLEMENTATION_REQUIRED = YES
+LOCAL_IMPLEMENTATION_AUTHORIZED = NO
+GATE_B = BLOCKED_PENDING_LOCAL_COMPATIBILITY_IMPLEMENTATION_AND_VERIFICATION
+NEXT_ACTION = USER REVIEW OF COMPATIBILITY SPECIFICATION/DESIGN
+```
+
+---
+
+# SPECIFICATION — USER DECISION CLOSURE (fid277) — 2026-08-24
+
+> Cierre de la USER_DECISION pendiente. DOCUMENTACIÓN. NO autoriza implementación.
+
+```text
+D-COURSE20-FID277-GRADEABLE = CONFIRMED
+  (la actividad implicó dedicación/participación real de los estudiantes y DEBE ser calificada.)
+
+FID277_REPORTABLE = YES
+FID277_GRADEABLE = YES
+FID277_CANONICAL_TP_CEE_NN = NO
+FID277_PERIOD_MODEL = NONE
+FID277_PERIOD_GRADE_CONTRIBUTION = NO
+
+EXISTING_PRODUCTION_GRADES_MUST_BE_PRESERVED = YES  (12 notas reales)
+SAVEGRADE_ALLOWED = YES (solo bajo las protecciones normales del backend seguro)
+
+REPORTABLE_GRADED_ACTIVITY = YES   (fid277)
+CANONICAL_PERIOD_TP        = NO    (fid277)
+```
+
+## Modelo de conceptos (3 niveles)
+
+```text
+1. REPORTABLE_ACTIVITY
+     actividad visible en el reporte.
+2. GRADEABLE_REPORT_ACTIVITY
+     actividad reportable cuya configuración/permisos permiten calificación
+     (grade_forum > 0 + protecciones del backend).
+3. CANONICAL_PERIOD_TP
+     TP canónico con semántica suficiente para cálculo de período.
+
+NO obligar a que REPORTABLE_ACTIVITY == CANONICAL_PERIOD_TP.
+```
+
+## Política de cursos (final)
+
+```text
+COURSE_15_IDENTIFIER_POLICY = CANONICAL_TP_CEE_NN (SIN CAMBIOS)
+  REPORTABLE = type != news AND parse_tp_identifier().valid
+  PERIOD_MODEL = EXISTING_VALIDATED
+
+COURSE_19_IDENTIFIER_POLICY = LEGACY_COMPATIBLE
+COURSE_20_IDENTIFIER_POLICY = LEGACY_COMPATIBLE
+  REPORTABLE = type != news AND name LIKE 'TP-%'
+  GRADEABLE  = REPORTABLE AND grade_forum > 0 AND safe backend protections
+  PERIOD_MODEL = NONE
+  NO renames · NO parse_tp_identifier como requisito de listado/savegrade
+
+UNKNOWN_COURSE_REPORTING    = LEGACY_READ_ONLY (type != news AND name LIKE 'TP-%')
+UNKNOWN_COURSE_SAVEGRADE    = DENY
+UNKNOWN_COURSE_SETUPGRADES  = DENY
+UNKNOWN_COURSE_PERIOD_MODEL = NONE
+```
+
+## SAVEGRADE / SETUPGRADES
+
+```text
+SAVEGRADE_POLICY (course-aware):
+  course15:     canonical reportable TP.
+  courses19/20: legacy-compatible reportable activity (incluye fid277).
+  En TODOS: forum belongs to course · student target valid · grader capability ·
+  grade_forum > 0 · official forum grade API · optimistic concurrency · lock ·
+  double read-back · no silent overwrite.
+
+SETUPGRADES_SCOPE = COURSE_15_ONLY (no ampliar a 19/20).
+```
+
+## Estado
+
+```text
+USER_DECISIONS_STILL_REQUIRED_COUNT = 0
+USER_DECISION_REQUIRED = NO
+SPECIFICATION_RECTIFICATION = COMPLETED
+LOCAL_IMPLEMENTATION_REQUIRED = YES
+LOCAL_IMPLEMENTATION_AUTHORIZED = NO
+GATE_B = BLOCKED_PENDING_LOCAL_COMPATIBILITY_IMPLEMENTATION_AND_VERIFICATION
+NEXT_ACTION = USER REVIEW FOR LOCAL COMPATIBILITY IMPLEMENTATION AUTHORIZATION
+```
