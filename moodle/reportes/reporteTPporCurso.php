@@ -196,6 +196,76 @@ function reporte_tp_is_valid_graded_tp(object $forum): bool {
     return parse_tp_identifier($forum->name)['valid'];
 }
 
+// ===========================================================================
+// COURSE-AWARE TP CLASSIFICATION (2026-08-24).
+// Separa REPORTABLE_ACTIVITY de CANONICAL_PERIOD_TP. NO relaja parse_tp_identifier()
+// ni reporte_tp_is_valid_graded_tp() (clasificación canónica del course 15, SIN cambios).
+// Punto de decisión central (policy por curso); NO ramas if de courseid dispersas.
+// Todas las funciones son PURAS (side-effect-free): no consultan ni modifican DB,
+// gradebook, grade_forum, forum_grades ni grade_items.
+// ===========================================================================
+
+// Política de identificación por curso.
+//  - 'canonical': course 15 (TP-CEE-NN estricto).
+//  - 'legacy':    courses 19/20 (name LIKE 'TP-', type != news).
+//  - 'unknown':   cualquier otro courseid (read-only; NUNCA write por policy desconocida).
+function reporte_tp_course_policy(int $courseid): string {
+    $knownpolicies = [
+        15 => 'canonical',
+        19 => 'legacy',
+        20 => 'legacy',
+    ];
+
+    return $knownpolicies[$courseid] ?? 'unknown';
+}
+
+// REPORTABLE_ACTIVITY: actividad que DEBE aparecer en el reporte (listing/excel) y,
+// cuando grade_forum lo permita, puede mostrar su nota. NO implica período canónico.
+function reporte_tp_is_reportable_activity(object $forum, int $courseid): bool {
+    $policy = reporte_tp_course_policy($courseid);
+
+    if ($policy === 'canonical') {
+        return reporte_tp_is_valid_graded_tp($forum);
+    }
+
+    // legacy + unknown: type != 'news' AND name comienza por 'TP-' (contrato histórico).
+    // PHP 7.4: stripos(...) === 0 (NO str_starts_with, no soportado en 7.4).
+    if (isset($forum->type) && $forum->type === 'news') {
+        return false;
+    }
+
+    if (empty($forum->name) || !is_string($forum->name)) {
+        return false;
+    }
+
+    return stripos($forum->name, 'TP-') === 0;
+}
+
+// CANONICAL_PERIOD_TP: TP con identificador canónico TP-CEE-NN suficiente para derivar
+// período/encuentro/ordinal. Alias semántico de reporte_tp_is_valid_graded_tp()
+// (clasificación canónica del course 15). UNCHANGED.
+function reporte_tp_is_canonical_period_tp(object $forum): bool {
+    return reporte_tp_is_valid_graded_tp($forum);
+}
+
+// SETUPGRADES_SCOPE = COURSE_15_ONLY.
+function reporte_tp_course_allows_setupgrades(int $courseid): bool {
+    return reporte_tp_course_policy($courseid) === 'canonical';
+}
+
+// SAVEGRADE: permitido solo para políticas de escritura conocidas (canonical 15 · legacy 19/20).
+// UNKNOWN course → DENY (nunca write por policy desconocida).
+function reporte_tp_course_allows_savegrade(int $courseid): bool {
+    $policy = reporte_tp_course_policy($courseid);
+
+    return $policy === 'canonical' || $policy === 'legacy';
+}
+
+// PERIOD_MODEL = COURSE_15_ONLY.
+function reporte_tp_course_supports_period_model(int $courseid): bool {
+    return reporte_tp_course_policy($courseid) === 'canonical';
+}
+
 // Período (1|2) derivado del parser canónico, o null si no es VALID_GRADED_TP.
 function reporte_tp_get_period_of_forum(object $forum): ?int {
     if (!reporte_tp_is_valid_graded_tp($forum)) {
@@ -448,6 +518,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'setupgrades') {
 
     $postcourseid = required_param('courseid', PARAM_INT);
 
+    // (COURSE-AWARE) SETUPGRADES_SCOPE = COURSE_15_ONLY. Denegar ANTES de cualquier
+    // escritura DB (DB->update_record / forum_grade_item_update / rebuild_course_cache).
+    if (!reporte_tp_course_allows_setupgrades($postcourseid)) {
+        redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+            'courseid' => $postcourseid,
+            'gradeerror' => 'nopermission'
+        ]));
+    }
+
     $course = $DB->get_record('course', ['id' => $postcourseid], '*', MUST_EXIST);
     require_login($course);
 
@@ -570,8 +649,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'savegrade') {
     $modulecontext = context_module::instance($cm->id);
     $roleflags = reporte_tp_role_flags($coursecontext, (int)$USER->id);
 
-    // Solo TP-CEE-NN válido (type != news).
-    if (!reporte_tp_is_valid_graded_tp($forum)) {
+    // (COURSE-AWARE) Elegibilidad course-aware del foro. El write path nunca se protege
+    // solo con name LIKE 'TP-%'; siempre via policy de curso. UNKNOWN course → SAVEGRADE DENY.
+    if (!reporte_tp_course_allows_savegrade($postcourseid)) {
+        $responderror('notgradable');
+    }
+
+    if (!reporte_tp_is_reportable_activity($forum, $postcourseid)) {
         $responderror('notgradable');
     }
 
@@ -839,6 +923,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'saveperiodgrade') {
 
     $postcourseid = required_param('courseid', PARAM_INT);
 
+    // (COURSE-AWARE) PERIOD_MODEL = COURSE_15_ONLY. Denegar ANTES de cualquier escritura
+    // (reporte_tp_ensure_period_grade_item / reporte_tp_write_period_grade /
+    //  reporte_tp_delete_period_grade / start_delegated_transaction).
+    if (!reporte_tp_course_supports_period_model($postcourseid)) {
+        redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+            'courseid' => $postcourseid,
+            'gradeerror' => 'nopermission'
+        ]));
+    }
+
     $course = $DB->get_record('course', ['id' => $postcourseid], '*', MUST_EXIST);
     require_login($course);
 
@@ -1008,6 +1102,8 @@ $forumgradepermissions = [];
 $needsgradesetup = false;
 $ungradedforumcount = 0;
 $canmanageactivities = false;
+$cansetupgrades = false;
+$periodmodelsupported = false;
 $canviewallgrades = false;
 $canviewownreport = false;
 $caneditperiodgrade = false;
@@ -1033,7 +1129,15 @@ if ($courseid) {
     }
 
     $canmanageactivities = $roleflags['caneditreport'] && has_capability('moodle/course:manageactivities', $coursecontext);
-    $caneditperiodgrade = $roleflags['caneditreport'] && has_capability('mod/forum:grade', $coursecontext);
+
+    // (COURSE-AWARE) SETUP_FLAGS: separar "necesita setup" de "puede hacer setup".
+    // El botón setupgrades solo aparece bajo policy course 15 (SETUPGRADES_SCOPE = COURSE_15_ONLY).
+    $cansetupgrades = $canmanageactivities && reporte_tp_course_allows_setupgrades((int)$courseid);
+
+    // (COURSE-AWARE) PERIOD_MODEL = COURSE_15_ONLY.
+    $periodmodelsupported = reporte_tp_course_supports_period_model((int)$courseid);
+
+    $caneditperiodgrade = $periodmodelsupported && $roleflags['caneditreport'] && has_capability('mod/forum:grade', $coursecontext);
 
     // Obtener solo foros TP-% visibles en la página del curso.
 $forums = $DB->get_records_sql("
@@ -1068,9 +1172,12 @@ $forums = $DB->get_records_sql("
     'modname' => 'forum'
 ]);
 
-    // UNIT-3: el listado de TP calificables se rige por VALID_GRADED_TP
-    // (excluye type='news', identificadores no canónicos y CEE fuera de período).
-    $forums = array_filter($forums, 'reporte_tp_is_valid_graded_tp');
+    // (COURSE-AWARE) El listado de actividades reportables se rige por la política
+    // del curso: canonical (course 15) o legacy-compatible (courses 19/20/unknown).
+    // Excel usa el mismo $forums y conserva exactamente el mismo set.
+    $forums = array_filter($forums, function (object $forum) use ($courseid): bool {
+        return reporte_tp_is_reportable_activity($forum, (int)$courseid);
+    });
 
     // Determinar permisos de calificación y si falta habilitar algún foro.
     foreach ($forums as $forum) {
@@ -1184,12 +1291,15 @@ $forums = $DB->get_records_sql("
         $report_data[] = $row;
     }
 
-    // Agrupación por período y notas de cuatrimestre por estudiante.
-    // El período se deriva del parser canónico (VALID_GRADED_TP), no de rangos de número de TP.
-    for ($period = 1; $period <= 2; $period++) {
-        $periodforums[$period] = reporte_tp_collect_period_forums($forums, $period);
-        $periodgrades[$period] = reporte_tp_compute_period_grades($students, $periodforums[$period], $forumgradevalues);
-        $savedperiodgrades[$period] = reporte_tp_get_saved_period_grades((int)$courseid, $period);
+    // (COURSE-AWARE) PERIOD_MODEL = COURSE_15_ONLY. Solo course 15 deriva período:
+    // collect_period_forums + compute_period_grades + get_saved_period_grades.
+    // Courses 19/20/unknown: NO derivación de período, NO notas 0 artificiales.
+    if ($periodmodelsupported) {
+        for ($period = 1; $period <= 2; $period++) {
+            $periodforums[$period] = reporte_tp_collect_period_forums($forums, $period);
+            $periodgrades[$period] = reporte_tp_compute_period_grades($students, $periodforums[$period], $forumgradevalues);
+            $savedperiodgrades[$period] = reporte_tp_get_saved_period_grades((int)$courseid, $period);
+        }
     }
 }
 
@@ -1770,7 +1880,7 @@ $currentuser = fullname($USER);
             <?php endif; ?>
         </form>
 
-        <?php if ($selected_course && $needsgradesetup && $canmanageactivities): ?>
+        <?php if ($selected_course && $needsgradesetup && $cansetupgrades): ?>
             <form method="post"
                   class="controls setup-grades-form"
                   action="<?php echo (new moodle_url('/reportes/reporteTPporCurso.php'))->out(false); ?>">
@@ -1848,8 +1958,10 @@ $currentuser = fullname($USER);
                         <?php foreach ($forums as $forum): ?>
                             <th><?php echo s($forum->name); ?></th>
                         <?php endforeach; ?>
-                        <th>Cuatrimestre 1</th>
-                        <th>Cuatrimestre 2</th>
+                        <?php if ($periodmodelsupported): ?>
+                            <th>Cuatrimestre 1</th>
+                            <th>Cuatrimestre 2</th>
+                        <?php endif; ?>
                     </tr>
                     </thead>
 
@@ -1871,7 +1983,14 @@ $currentuser = fullname($USER);
                                     }
 
                                     $isgradable = !empty($forum->grade_forum) && (float)$forum->grade_forum > 0;
-                                    $cangradeforum = $canviewallgrades && !empty($forumgradepermissions[$forum->id]);
+
+                                    // (COURSE-AWARE) CAN_EDIT_GRADE = reportable AND política de
+                                    // escritura conocida AND HAS_GRADING_ENABLED AND protecciones.
+                                    // UNKNOWN course con grade_forum > 0 → solo lectura (nota visible),
+                                    // NUNCA "Foro no calificable" cuando sí tiene calificación.
+                                    $cangradeforum = $canviewallgrades
+                                        && !empty($forumgradepermissions[$forum->id])
+                                        && reporte_tp_course_allows_savegrade((int)$courseid);
                                 ?>
 
                                 <td class="forum-cell">
@@ -1921,6 +2040,7 @@ $currentuser = fullname($USER);
                                 </td>
                             <?php endforeach; ?>
 
+                            <?php if ($periodmodelsupported): ?>
                             <?php foreach ([1, 2] as $period): ?>
                                 <?php
                                     $pinfo = $periodgrades[$period][$data['userid']] ?? null;
@@ -1963,6 +2083,7 @@ $currentuser = fullname($USER);
                                     <?php endif; ?>
                                 </td>
                             <?php endforeach; ?>
+                            <?php endif; ?>
                         </tr>
                     <?php endforeach; ?>
                     </tbody>
