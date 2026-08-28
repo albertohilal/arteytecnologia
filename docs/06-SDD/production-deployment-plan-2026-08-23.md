@@ -912,3 +912,75 @@ SUPERSEDE de R-B15/R-B16: LOCAL_IMPLEMENTATION ya NO pending (AUTHORIZED + COMPL
 
 NEXT_ACTION = GIT CHECKPOINT (selective staging + commit) → re-evaluar GATE_B
 ```
+
+## R-B18 — GATE_B PRODUCTION EXECUTION — VERIFIED SUCCESS — AWAITING GIT CHECKPOINT — 2026-08-28 (CURRENT)
+
+```text
+GATE_B_IMPLEMENTATION          = COMPLETED
+GATE_B_VERIFICATION            = PASS
+GATE_B_RENAME_EXECUTION_ALREADY_CONSUMED = YES
+DO_NOT_REPEAT_RENAME_EXECUTION = YES
+GATE_B_GIT_CHECKPOINT          = AWAITING_COMMIT_AUTHORIZATION
+GATE_B_CLOSURE                 = AWAITING_GIT_CHECKPOINT
+EXECUTE_EXIT_CODE              = 0
+EXPECTED_RENAMES               = 28
+SUCCESSFUL_RENAMES             = 28
+FAILED_RENAMES                 = 0
+POST_CANONICAL_NAME_MATCH      = 28
+POST_CANONICAL_NAME_MISMATCH   = 0
+POST_CMID_MAPPING              = PASS
+
+ACADEMIC_INVARIANTS_PRE_EQUALS_POST:
+  grade_grades   = 564
+  forum_grades   = 564
+  grade_match    = 564
+  grade_mismatch = 0
+  discussions    = 674
+  posts          = 813
+
+GRADE_ITEM_DEFINITION_ROW_COUNT        = 9
+GRADE_ITEM_DEFINITIONS_PRE_SHA256      = 1e62263f46a5a1f6516ab86e3de03848e86ed5b43eba5dfbfe0e8bb57904fc1a
+GRADE_ITEM_DEFINITIONS_POST_SHA256     = 1e62263f46a5a1f6516ab86e3de03848e86ed5b43eba5dfbfe0e8bb57904fc1a
+GRADE_ITEM_DEFINITIONS_PRE_EQUALS_POST = YES
+
+JD_001_STATUS = RESOLVED_EXPECTED_SIDE_EFFECT
+  (set_coursemodule_name() actualizó grade_item.itemname para seguir el nuevo nombre
+   canónico del foro, preservando el sufijo " foro completo"; el resto de campos
+   académicos de grade_item quedaron byte-idénticos.
+   EXPECTED_NAME_PROPAGATION = YES · OTHER_GRADE_ITEM_FIELDS_UNCHANGED = YES ·
+   UNEXPECTED_GRADE_ITEM_DRIFT = NO.
+   NOTA: grade_item.itemname NO fue byte-idéntico — propagación de nombre esperada.)
+
+DATABASE_CHANGED = YES
+DATABASE_CHANGE_SCOPE = AUTHORIZED_CANONICAL_FORUM_RENAMES_AND_EXPECTED_MOODLE_NAME_PROPAGATION_ONLY
+GRADE_FORUM_VALUES_UNCHANGED = YES (grade_grades/forum_grades/grade_match 564 · mismatch 0)
+DISCUSSIONS_POSTS_UNCHANGED  = YES (674 discussions · 813 posts)
+MOODLEDATA_CHANGED = NO
+WEB_FILES_CHANGED  = NO
+DOCKER_CHANGED     = NO
+
+MAINTENANCE_MODE = ON
+
+BACKUP_EVIDENCE =
+  db-dumps/2026-08-28-iunaorg_arteytecnologia.sql
+  size   = 39044868
+  sha256 = af7926b5419dc60931d5852f121d46ad3a0dfa462ac292d1cc47e1e178b22184
+  BACKUP_PRE_EXECUTION_SUITABLE = YES
+  (el dump NO se stagea ni se versiona en Git)
+
+REMOTE_TMP_ARTIFACTS =
+  /tmp/gate_b_rename_remaining_28.php
+  /tmp/gate_b_baseline_readonly.php
+TMP_CLEANUP = PENDING_AUTHORIZATION
+
+GATE_MOODLE_PRODUCTION_CUTOVER = AWAITING_AUTHORIZATION
+FUTURE_SCOPE = maintenance exit + availability verification + end-to-end Moodle verification
+               (NO autorizado en esta unidad)
+
+COMMIT = NOT_EXECUTED · PUSH = NOT_EXECUTED
+
+Después del futuro commit + push verificados (LOCAL_HEAD=REMOTE_HEAD):
+  GATE_B_CLOSURE = CLOSED_SUCCESS
+
+NEXT_ACTION = AWAIT USER AUTHORIZATION FOR COMMIT (Git checkpoint preparado con staging selectivo documental)
+```
