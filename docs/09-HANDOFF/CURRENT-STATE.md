@@ -1946,3 +1946,348 @@ Después del futuro commit + push verificados (LOCAL_HEAD=REMOTE_HEAD):
 
 NEXT_ACTION = AWAIT USER AUTHORIZATION FOR COMMIT (checkpoint preparado)
 ```
+
+## GATE-B R-B11 PRODUCTION FUNCTIONAL VERIFICATION — READ-ONLY + DOCUMENT_CURRENT_STATE — 2026-08-28
+
+```text
+UNIT            = GATE_B_R_B11_PRODUCTION_FUNCTIONAL_VERIFICATION
+PHASE           = VERIFICATION + DOCUMENT_CURRENT_STATE (read-only + documentation only)
+ENVIRONMENT     = PRODUCTION (read-only)
+AUTHORIZATION   = GATE_B_R_B11_PRODUCTION_FUNCTIONAL_VERIFICATION = AUTHORIZED (consumed)
+                DOCUMENT_CURRENT_STATE = AUTHORIZED (minimal, no staging)
+
+R_B11_AUTHORIZATION = CONSUMED
+
+=== TECHNICAL PRECHECK (PASS) ===
+MAINTENANCE_MODE              = ON
+  (dataroot /home/iunaorg/arteytecnologia-data/climaintenance.html presente · 687 B)
+LIVE_REPORT_EXISTS            = YES
+  /home/iunaorg/public_html/arteytecnologia.com.ar/reportes/reporteTPporCurso.php
+DEPLOYED_PHP_SHA256           = d1e87962842082a3abf204f00ec7b3a3daf0c913b251481926ad9aa5eb33eafb
+DEPLOYED_PHP_HASH_STILL_VALID = YES  (sha256sum en vivo == DEPLOYED_PHP_SHA256)
+DEPLOYED_PHP74_LINT           = PASS  (/opt/alt/php74/usr/bin/php -l → No syntax errors)
+OWNER_GROUP_MODE              = iunaorg:iunaorg:0644  (-rw-r--r-- 1 iunaorg iunaorg)
+
+PRE_BACKUP_R_B10 = /home/iunaorg/reporteTPporCurso.php.pre-gate-b-RB10-20260828-191258.bak
+  sha256 1f93af05c2364f42e49255ecce42da28dee2797cb44188c7887012ccf5c49e13 (verificado en vivo)
+
+=== ACADEMIC BASELINE (READ-ONLY · PRE == POST == FROZEN) ===
+PRE_ACADEMIC_BASELINE  = 564/564/564/0/674/813
+POST_ACADEMIC_BASELINE = 564/564/564/0/674/813
+  (grade_grades_non_null / forum_grades_non_null / grade_match / grade_mismatch /
+   discussions / posts)
+ACADEMIC_INVARIANTS_PRE_EQUALS_POST = YES
+GRADE_VALUES_CHANGED   = NO
+ACADEMIC_DATABASE_CHANGED = NO
+GRADE_ITEM_DEFINITIONS_SHA256 (PRE=POST) = 1e62263f46a5a1f6516ab86e3de03848e86ed5b43eba5dfbfe0e8bb57904fc1a
+  (9 rows course 15 · unchanged)
+
+=== FUNCTIONAL VERIFICATION (sin sesión autenticada) ===
+REPORT_ENDPOINT_HTTP_PROBE = 503 (maintenance mode activo)
+  (GET no-auth → 503 + página climaintenance.html; NO 303→login porque maintenance
+   intercepta antes del flujo de login; sin fatal PHP)
+PHP_FATAL            = NO
+PHP_WARNING_VISIBLE  = NO
+BROKEN_JSON_HTML     = N/A (página maintenance, no el reporte)
+
+COURSE15_FUNCTIONAL_VERIFICATION = AWAITING_USER
+COURSE19_FUNCTIONAL_VERIFICATION = AWAITING_USER
+COURSE20_FUNCTIONAL_VERIFICATION = AWAITING_USER
+FID173_VERIFICATION  = AWAITING_USER  (nombre canónico ya verificado en DB por GATE_B renames
+                       28/28; render visual "TP-213-01 - Coordenadas cartesianas" requiere sesión)
+FID277_VERIFICATION  = AWAITING_USER  (reportable/gradeable en course 20 requiere confirmación visual)
+USER_VISUAL_VERIFICATION = AWAITING_USER
+R_B11_FUNCTIONAL_VERIFICATION = AWAITING_USER_VISUAL_VERIFICATION
+
+=== RESIDUOS / LIMPIEZA ===
+RESIDUAL_STAGING_FILE (non-webroot) =
+  /home/iunaorg/reporteTPporCurso.php.rb10.new  (81984 B · -rwxr-xr-x 0755 ·
+  sha256 d1e87962... == live · byte-idéntico al desplegado)
+TMP_ARTIFACTS_REMOTE =
+  /tmp/gate_b_baseline_readonly.php (176c748c... verificado) ·
+  /tmp/gate_b_rename_remaining_28.php
+TMP_CLEANUP = PENDING_AUTHORIZATION
+
+=== ESTADO GATE ===
+CUTOVER_READY_FOR_AUTHORIZATION = NO  (falta verificación visual del usuario)
+GATE_MOODLE_PRODUCTION_CUTOVER   = AWAITING_AUTHORIZATION  (NO autorizado)
+MAINTENANCE_MODE = ON  (NO tocar)
+
+DATABASE_CHANGED = NO · MOODLEDATA_CHANGED = NO · PHP_FILES_CHANGED = NO_IN_R_B11
+DOCKER_CHANGED = NO · INCIDENTAL_SESSION_LOG_WRITES = NONE_OBSERVED
+PRODUCTION_IMPACT = NONE
+GIT_ADD = NO · GIT_COMMIT = NO · GIT_PUSH = NO
+
+VERIFICATION_RESULT = PASS_TECHNICAL_ACADEMIC · FUNCTIONAL_AWAITING_USER
+NEXT_ACTION = USER VISUAL VERIFICATION (checklist) → luego GATE_MOODLE_PRODUCTION_CUTOVER
+```
+
+### Checklist manual de verificación visual (usuario)
+
+```text
+1. Acceder con sesión autenticada de docente/admin a https://arteytecnologia.com.ar
+   (requiere salir de maintenance o sesión válida; sin pulsar acciones de escritura).
+2. Curso 15 (Medios Aud-2026) → reporteTPporCurso.php:
+   - TP canónicos visibles; fid157 "Programa de la asignatura" EXCLUIDO.
+   - fid173 visible como "TP-213-01 - Coordenadas cartesianas".
+   - títulos completos; notas existentes visibles; "Ver" válidos; "Sin entrega" correcto.
+   - Cuatrimestre 1/2 presentes SOLO en curso 15.
+   - NO pulsar Guardar / Habilitar calificaciones / Guardar notas del período.
+   - Gradebook solo lectura.
+3. Curso 19 (T.Comp Pint 2026) → reporte: legacy TP visibles con títulos originales.
+4. Curso 20 (Lenguaje Visual I-2026) → reporte: legacy TP visibles; fid277 reportable/gradeable.
+5. Confirmar: sin exclusiones por parser en cursos 19/20.
+```
+
+## GATE-B R-B11 PRODUCTION FUNCTIONAL VERIFICATION — FINALIZATION (USER VISUAL PASS) — 2026-08-28
+
+```text
+UNIT            = GATE_B_R_B11_PRODUCTION_FUNCTIONAL_VERIFICATION_FINALIZATION
+PHASE           = VERIFICATION (read-only postcheck) + DOCUMENT_CURRENT_STATE
+ENVIRONMENT     = PRODUCTION (read-only)
+AUTHORIZATION   = READ-ONLY postcheck + DOCUMENT_CURRENT_STATE (consumido)
+                NOT authorized: maintenance disable/cutover, cleanup, staging,
+                commit, push, rollback, academic/grade write
+
+=== VERIFICACIÓN VISUAL DEL USUARIO (AUTORITATIVA) ===
+USER_VISUAL_VERIFICATION              = PASS
+COURSE15_FUNCTIONAL_VERIFICATION      = PASS
+COURSE19_FUNCTIONAL_VERIFICATION      = PASS
+COURSE20_FUNCTIONAL_VERIFICATION      = PASS
+FID173_VERIFICATION                   = PASS_EXPECTED_HIDDEN_SECTION_BEHAVIOR
+  (fid173 "TP-213-01 - Coordenadas cartesianas" pertenece a una sección actualmente
+   oculta a estudiantes → su ausencia del reporte es COMPORTAMIENTO ESPERADO, no defecto)
+REPORT_VISIBILITY_POLICY              = STUDENT_VISIBLE_ACTIVITIES_ONLY
+FID277_VERIFICATION                   = PASS_REPORTABLE_AND_GRADEABLE
+
+=== REVALIDACIÓN TÉCNICA FINAL (READ-ONLY) ===
+DEPLOYED_PHP_SHA256                   = d1e87962842082a3abf204f00ec7b3a3daf0c913b251481926ad9aa5eb33eafb
+DEPLOYED_PHP_HASH_STILL_VALID         = YES  (sha256sum en vivo == DEPLOYED_PHP_SHA256)
+DEPLOYED_PHP74_LINT                   = PASS  (/opt/alt/php74/usr/bin/php -l → No syntax errors)
+
+PREVIOUS_PHP_BACKUP =
+  /home/iunaorg/reporteTPporCurso.php.pre-gate-b-RB10-20260828-191258.bak
+  sha256 1f93af05c2364f42e49255ecce42da28dee2797cb44188c7887012ccf5c49e13 (verificado en vivo)
+
+=== MAINTENANCE (READ-ONLY · NO tocar) ===
+STANDARD_MOODLE_MAINTENANCE           = ON
+MAINTENANCE_MECHANISM                 = mdl_config.maintenance_enabled=1 (modo estándar Moodle vía tabla config)
+  maintenance_message = "<h2>Hoy Sabado 13 de abril de 2024, ...mantenimiento...</h2>" (custom)
+CLIMAINTENANCE_HTML_RETIRED           = YES
+  /home/iunaorg/arteytecnologia-data/climaintenance.html.rb11-protected-20260828201302.bak (687 B, preservado)
+CLIMAINTENANCE_HTML_ACTIVE            = NO (no hay climaintenance.html activo; mecanismo estándar DB activo)
+LOGIN_PAGE_TITLE                      = "En Modo Mantenimiento" (verificado)
+HTTP_PROBE                            = 303 → login (redirect Moodle; maintenance estándar muestra el aviso en login, no 503)
+
+=== POSTCHECK ACADÉMICO FINAL (READ-ONLY · /tmp/gate_b_baseline_readonly.php --production) ===
+FINAL_ACADEMIC_BASELINE               = 564/564/564/0/674/813
+  (grade_grades_non_null / forum_grades_non_null / grade_match / grade_mismatch /
+   discussions / posts)
+ACADEMIC_INVARIANTS_PRE_EQUALS_FINAL  = YES  (564/564/564/0/674/813 == frozen baseline)
+GRADE_VALUES_CHANGED                  = NO
+ACADEMIC_DATABASE_CHANGED             = NO
+GRADE_ITEM_DEFINITIONS_SHA256 (PRE=POST) = 1e62263f46a5a1f6516ab86e3de03848e86ed5b43eba5dfbfe0e8bb57904fc1a
+  (9 rows course 15 · unchanged)
+DB_ACCESS_MODE                        = READ_ONLY
+
+=== DECISIÓN FINAL R-B11 ===
+R_B11_FUNCTIONAL_VERIFICATION         = PASS
+  (COURSE15/19/20 = PASS · USER_VISUAL_VERIFICATION = PASS ·
+   ACADEMIC_INVARIANTS_PRE_EQUALS_FINAL = YES · DEPLOYED_PHP_HASH_STILL_VALID = YES ·
+   DEPLOYED_PHP74_LINT = PASS)
+
+=== RESIDUOS / LIMPIEZA (NO autorizado en esta unidad) ===
+RESIDUAL_STAGING_FILE (non-webroot) =
+  /home/iunaorg/reporteTPporCurso.php.rb10.new  (81984 B · -rwxr-xr-x 0755 · byte-idéntico al desplegado)
+TMP_ARTIFACTS_REMOTE =
+  /tmp/gate_b_baseline_readonly.php (176c748c... verificado) ·
+  /tmp/gate_b_rename_remaining_28.php
+TMP_CLEANUP                          = PENDING_AUTHORIZATION
+
+=== ESTADO GATE ===
+CUTOVER_READY_FOR_AUTHORIZATION       = YES
+GATE_MOODLE_PRODUCTION_CUTOVER        = AWAITING_AUTHORIZATION  (NO autorizado)
+MAINTENANCE_MODE                      = ON  (NO tocar)
+
+IMPORTANT_CHANGE_STATUS               = AWAITING_GIT_CHECKPOINT  (NO CLOSED_SUCCESS)
+PRODUCTION_DEPLOYMENT_OVERALL_CLOSED_SUCCESS = NO
+  (aún requiere: CUTOVER → post-cutover verification → DOCUMENT → GIT checkpoint →
+   commit → push → LOCAL_HEAD=REMOTE_HEAD → CLOSE)
+
+DATABASE_CHANGED = NO · MOODLEDATA_CHANGED = NO · PHP_FILES_CHANGED = NO_IN_R_B11_FINAL
+DOCKER_CHANGED = NO · INCIDENTAL_SESSION_LOG_WRITES = NONE_OBSERVED
+PRODUCTION_IMPACT = NONE
+GIT_ADD = NO · GIT_COMMIT = NO · GIT_PUSH = NO
+
+VERIFICATION_RESULT = PASS
+NEXT_ACTION = AWAIT GATE_MOODLE_PRODUCTION_CUTOVER AUTHORIZATION
+```
+
+## GATE_MOODLE_PRODUCTION_CUTOVER — EXECUTED (maintenance exit) — PASS — 2026-08-28
+
+```text
+UNIT            = GATE_MOODLE_PRODUCTION_CUTOVER
+PHASE           = AUTHORIZED_IMPLEMENTATION (maintenance exit) → VERIFICATION → DOCUMENT_CURRENT_STATE
+ENVIRONMENT     = PRODUCTION (https://arteytecnologia.com.ar)
+AUTHORIZATION   = GATE_MOODLE_PRODUCTION_CUTOVER = AUTHORIZED (consumido)
+SCOPE           = maintenance exit + availability/end-to-end verification (read-only) + document
+
+=== PRECHECK (SSH read-only · PRE-CUTOVER) ===
+SSH_IDENTITY                = PASS (sv46.byethost46.org · iunaorg · php74 /opt/alt/php74/usr/bin/php)
+MAINTENANCE_ENABLED_PRE_CUTOVER = 1
+CLIMAINTENANCE_TRIGGER_EXISTS_PRE = NO
+  (no hay climaintenance.html activo en dataroot ni webroot; retirado en R-B11)
+CLIMAINTENANCE_BACKUP_EXISTS_PRE = YES
+CLIMAINTENANCE_BACKUP_SHA256 = cf7b73dc2b76339c1df2603db0f5b5a4a8ed934ddecb7979ad5c5e8ae2d4e3ad
+  (/home/iunaorg/arteytecnologia-data/climaintenance.html.rb11-protected-20260828201302.bak)
+LIVE_REPORT_SHA256_PRE      = d1e87962842082a3abf204f00ec7b3a3daf0c913b251481926ad9aa5eb33eafb
+  (== DEPLOYED_PHP_SHA256 autoritativo)
+PHP74_LINT_PRE              = PASS (No syntax errors detected)
+PRE_CUTOVER_ACADEMIC_BASELINE = 564/564/564/0/674/813
+  (grade_grades_non_null / forum_grades_non_null / grade_match / grade_mismatch /
+   discussions / posts · vía /tmp/gate_b_baseline_readonly.php --production · DB_ACCESS_MODE=READ_ONLY)
+
+=== MAINTENANCE EXIT (mecanismo oficial verificado) ===
+MECHANISM                    = admin/cli/maintenance.php --disable
+  (inspeccionado en fuente: set_config('maintenance_enabled', 0) +
+   unset_config('maintenance_later') + unlink condicional de climaintenance.html
+   SOLO si existe → archivo ABSENTE, no-op; NO toca el .bak)
+MAINTENANCE_DISABLE_ATTEMPT_COUNT = 1
+DISABLE_EXIT_CODE            = 0
+DISABLE_OUTPUT               = "El modo de mantenimiento está desactivado y el sitio vuelve a funcionar con normalidad"
+
+=== READ-BACK POST-CUTOVER ===
+MAINTENANCE_ENABLED_POST_CUTOVER = 0  (cfg.php --name=maintenance_enabled → 0)
+MAINTENANCE_STATUS_POST      = "Estado: desactivado"
+CLIMAINTENANCE_TRIGGER_EXISTS_POST = NO
+CLIMAINTENANCE_BACKUP_EXISTS_POST = YES
+CLIMAINTENANCE_BACKUP_SHA256_POST = cf7b73dc2b76339c1df2603db0f5b5a4a8ed934ddecb7979ad5c5e8ae2d4e3ad
+  (intacto, byte-idéntico)
+
+=== AVAILABILITY VERIFICATION (HTTP no autenticado) ===
+PUBLIC_SITE_AVAILABLE        = YES
+  (GET https://arteytecnologia.com.ar/ → HTTP 200 · final URL = raíz · sin redirect maintenance)
+REPORT_ENDPOINT_AVAILABLE    = YES
+  (GET /reportes/reporteTPporCurso.php?courseid=15 → HTTP 200 · redirect normal → /login/index.php)
+MAINTENANCE_PAGE_VISIBLE     = NO
+  (login title = "Campus Arte y Tecnologia: Iniciar sesión en el sitio" · NO "En Modo Mantenimiento")
+REPORT_ENDPOINT_MAINTENANCE_INTERCEPT = NO  (redirect a login normal, no 503 ni página maintenance)
+
+=== POST-CUTOVER PHP (sin cambio de código) ===
+DEPLOYED_PHP_SHA256_POST     = d1e87962842082a3abf204f00ec7b3a3daf0c913b251481926ad9aa5eb33eafb
+DEPLOYED_PHP_HASH_STILL_VALID = YES  (sha256sum en vivo == DEPLOYED_PHP_SHA256)
+DEPLOYED_PHP74_LINT_POST     = PASS  (/opt/alt/php74/usr/bin/php -l → No syntax errors)
+
+=== POST-CUTOVER ACADÉMICO (READ-ONLY) ===
+POST_CUTOVER_ACADEMIC_BASELINE = 564/564/564/0/674/813
+ACADEMIC_INVARIANTS_PRE_EQUALS_POST_CUTOVER = YES  (PRE == POST == frozen baseline)
+GRADE_VALUES_CHANGED         = NO
+ACADEMIC_DATABASE_CHANGED    = NO
+GRADE_ITEM_DEFINITIONS_SHA256 = 1e62263f46a5a1f6516ab86e3de03848e86ed5b43eba5dfbfe0e8bb57904fc1a (unchanged)
+
+=== END-TO-END READ-ONLY VERIFICATION ===
+CADENA = SITE AVAILABLE → LOGIN PATH AVAILABLE → COURSE/REPORT ENDPOINT AVAILABLE →
+         DEPLOYED HASH VALID → ACADEMIC BASELINE VALID
+POST_CUTOVER_END_TO_END_VERIFICATION = PASS  (sin drift público/técnico)
+  (NO autenticación solicitada; USER_VISUAL_VERIFICATION=PASS de R-B11 sigue vigente,
+   PHP sin cambios desde R-B11)
+
+=== POLÍTICA DE FALLO / ROLLBACK ===
+ROLLBACK_REQUIRED            = NO
+ROLLBACK_EXECUTED            = NO
+ROLLBACK_RESULT              = NOT_REQUIRED
+  (disable exitoso + disponibilidad normal; no se re-habilitó maintenance ni se restauró climaintenance)
+
+=== DATABASE / CAMBIOS ===
+DATABASE_CHANGED             = YES_SOLO_MECANISMO_MAINTENANCE (mdl_config.maintenance_enabled 1→0)
+  (sin writes de notas; sin cambios de usuarios/cursos/foros)
+PHP_FILES_CHANGED            = NO · MOODLEDATA_CHANGED = NO · WEB_FILES_CHANGED = NO
+DOCKER_CHANGED               = NO
+PRODUCTION_IMPACT            = maintenance OFF (sitio público disponible)
+
+=== RESIDUOS / LIMPIEZA ===
+TMP_CLEANUP                  = PENDING_AUTHORIZATION
+  (/tmp/gate_b_baseline_readonly.php · /tmp/gate_b_rename_remaining_28.php ·
+   /home/iunaorg/reporteTPporCurso.php.rb10.new · backup climaintenance .bak preservado)
+  NO cleanup ejecutado; NO eliminar backups/helpers sin autorización.
+
+=== ESTADO GATE / CIERRE ===
+GATE_MOODLE_PRODUCTION_CUTOVER = PASS
+GATE_PRODUCTION_DEPLOYMENT_CLOSURE = AWAITING_GIT_CHECKPOINT
+  (NO CLOSED_SUCCESS: requiere DOCUMENT → GIT checkpoint → commit → push →
+   LOCAL_HEAD=REMOTE_HEAD → CLOSE)
+IMPORTANT_CHANGE_STATUS       = AWAITING_GIT_CHECKPOINT
+PRODUCTION_DEPLOYMENT_OVERALL_CLOSED_SUCCESS = NO
+MAINTENANCE_MODE              = OFF (maintenance_enabled=0)
+
+GIT_ADD = NO · GIT_COMMIT = NO · GIT_PUSH = NO
+VERIFICATION_RESULT = PASS
+NEXT_ACTION = PREPARE_FINAL_PRODUCTION_GIT_CHECKPOINT (requiere autorización separada de commit/push)
+```
+
+## FINAL PRODUCTION DEPLOYMENT — CLOSURE STATE + GIT CHECKPOINT PREPARATION — 2026-08-29
+
+```text
+UNIT            = FINAL_PRODUCTION_DEPLOYMENT_GIT_CHECKPOINT_PREPARATION
+PHASE           = DOCUMENT_CURRENT_STATE + PREPARE_GIT_CHECKPOINT + VERIFICATION
+ENVIRONMENT     = LOCAL (documentación + staging selectivo Git; producción NO tocada)
+AUTHORIZATION   = PREPARE_FINAL_PRODUCTION_GIT_CHECKPOINT = AUTHORIZED (consumido)
+                NOT authorized: commit, push, cleanup, producción, DB, Moodle, Docker
+
+=== ESTADO AUTORITATIVO FINAL DE PRODUCCIÓN (registrado · no inventado) ===
+GATE_B_RENAME_EXECUTION               = CLOSED_SUCCESS
+GATE_B_RENAME_GIT_CHECKPOINT          = CLOSED_SUCCESS
+  (reconcilia la sección "GATE_B PRODUCTION EXECUTION" que quedó en
+   GATE_B_GIT_CHECKPOINT=AWAITING_COMMIT_AUTHORIZATION; el checkpoint de renombres
+   ya está commiteado + pusheado: commit 154816f "docs: record verified Gate B
+   production forum renames" · LOCAL_HEAD == REMOTE_HEAD == 154816f)
+R_B10_DEPLOYMENT_VERIFICATION         = PASS
+PRODUCTION_REPORT_PHP_DEPLOYED        = YES
+DEPLOYED_PHP_SHA256                   = d1e87962842082a3abf204f00ec7b3a3daf0c913b251481926ad9aa5eb33eafb
+R_B11_FUNCTIONAL_VERIFICATION         = PASS
+USER_VISUAL_VERIFICATION              = PASS
+COURSE15_FUNCTIONAL_VERIFICATION      = PASS
+COURSE19_FUNCTIONAL_VERIFICATION      = PASS
+COURSE20_FUNCTIONAL_VERIFICATION      = PASS
+FID173_VERIFICATION                   = PASS_EXPECTED_HIDDEN_SECTION_BEHAVIOR
+FID277_VERIFICATION                   = PASS_REPORTABLE_AND_GRADEABLE
+GATE_MOODLE_PRODUCTION_CUTOVER        = PASS
+MAINTENANCE_ENABLED_POST_CUTOVER      = 0
+PUBLIC_SITE_AVAILABLE                 = YES
+REPORT_ENDPOINT_AVAILABLE             = YES
+MAINTENANCE_PAGE_VISIBLE              = NO
+DEPLOYED_PHP_HASH_STILL_VALID         = YES
+DEPLOYED_PHP74_LINT_POST              = PASS
+POST_CUTOVER_ACADEMIC_BASELINE        = 564/564/564/0/674/813
+ACADEMIC_INVARIANTS_PRE_EQUALS_POST_CUTOVER = YES
+GRADE_VALUES_CHANGED                  = NO
+ACADEMIC_DATABASE_CHANGED             = NO
+ROLLBACK_EXECUTED                     = NO
+TMP_CLEANUP                           = PENDING_AUTHORIZATION
+
+=== CIERRE FORMAL DEL DEPLOYMENT (NO declarar CLOSED_SUCCESS prematuro) ===
+GATE_PRODUCTION_DEPLOYMENT_IMPLEMENTATION = COMPLETED
+GATE_PRODUCTION_DEPLOYMENT_VERIFICATION   = PASS
+GATE_PRODUCTION_DEPLOYMENT_CLOSURE        = AWAITING_GIT_CHECKPOINT
+IMPORTANT_CHANGE_STATUS                    = AWAITING_GIT_CHECKPOINT
+PRODUCTION_DEPLOYMENT_OVERALL_CLOSED_SUCCESS = NO
+  (aún requiere: DOCUMENT → GIT checkpoint → commit → push →
+   LOCAL_HEAD=REMOTE_HEAD → CLOSE)
+MAINTENANCE_MODE                          = OFF (maintenance_enabled=0)
+
+=== PREPARE_GIT_CHECKPOINT (esta unidad) ===
+DOCUMENTATION_ONLY        = YES
+STAGING_CANDIDATES        = docs/09-HANDOFF/CURRENT-STATE.md
+AUXILIAR_INCLUDED_IN_GIT  = NO
+DB_DUMP_INCLUDED          = NO
+BACKUP_INCLUDED           = NO
+TEMP_HELPERS_INCLUDED     = NO
+SOURCE_CODE_INCLUDED      = NO
+DATABASE_CHANGED          = NO
+DOCKER_CHANGED            = NO
+PRODUCTION_CHANGED        = NO
+
+VERIFICATION_RESULT = PASS (documentación verificada; staging selectivo preparado)
+NEXT_ACTION = AWAIT FINAL PRODUCTION COMMIT AUTHORIZATION (commit + push con autorización separada)
+```
+
