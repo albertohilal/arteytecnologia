@@ -4,6 +4,10 @@
 !/moodle/reportes/
 /moodle/reportes/*
 !/moodle/reportes/reporteTPporCurso.php
+!/moodle/local/
+/moodle/local/*
+!/moodle/local/tpperiods/
+!/moodle/local/tpperiods/**
 
 # No versionar moodledata
 /moodledata/*
