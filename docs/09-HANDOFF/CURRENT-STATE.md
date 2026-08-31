@@ -2440,6 +2440,15 @@ NEXT_ACTION = AWAIT CLOSURE DOCUMENTATION GIT CHECKPOINT AUTHORIZATION (staging 
 > It supersedes older operational descriptions ONLY as current state; prior
 > sections are preserved unchanged as historical evidence.
 
+> **SUPERSEDED_GIT_AND_CLOSURE_STATE (2026-08-31).** Esta sección se escribió ANTES
+> del commit/push final `67d492f` del report integration. Sus subsecciones
+> `GIT STATE` (HEAD=99783a2) y `SDD CLOSURE STATE`
+> (IMPORTANT_CHANGE_STATUS=AWAITING_GIT_CHECKPOINT · GATE_REPORT_INTEGRATION_GIT_CHECKPOINT=AWAITING_AUTHORIZATION ·
+> COMMIT=NOT_AUTHORIZED · PUSH=NOT_AUTHORIZED · FINAL_CLOSED_SUCCESS=NO) quedan SUPERSEDED
+> por el cierre real verificado (commit + push `67d492f`, LOCAL_HEAD==REMOTE_HEAD). El estado
+> operativo VIGENTE está en la sección `UNIT_PRODUCTION_DEPLOYMENT_TPPERIOD_REPORT — POST-CLOSURE
+> RECONCILIATION + PLANNING STATE` (más abajo).
+
 ### UNIT / ENVIRONMENT
 - UNIT = MOODLE_TP_PERIOD_METADATA_REPORT_INTEGRATION
 - ENVIRONMENT = LOCAL_ONLY
@@ -2540,4 +2549,85 @@ NEXT_ACTION = AWAIT CLOSURE DOCUMENTATION GIT CHECKPOINT AUTHORIZATION (staging 
 - COMMIT=NOT_AUTHORIZED · PUSH=NOT_AUTHORIZED
 - FINAL_CLOSED_SUCCESS = NO (requires PREPARE_GIT_CHECKPOINT → staging → commit → push → LOCAL_HEAD==REMOTE_HEAD → CLOSE)
 - PRODUCTION_IMPACT = NONE · GATE_PRODUCTION_DEPLOYMENT = AWAITING_AUTHORIZATION
+
+## UNIT_PRODUCTION_DEPLOYMENT_TPPERIOD_REPORT — POST-CLOSURE RECONCILIATION + PLANNING STATE — 2026-08-31
+
+> **RECTIFICACIÓN DE ESTADO OPERATIVO (RECTIFICATION-CURRENT-STATE, autorizado).** Esta sección
+> (1) reconcilia el cierre REAL verificado de `MOODLE_TP_PERIOD_METADATA_REPORT_INTEGRATION`
+> (cuyos campos `GIT STATE`/`SDD CLOSURE STATE` de la sección anterior quedaron SUPERSEDED) y
+> (2) registra el estado de planificación DISCOVERY+SPEC+DESIGN de
+> `UNIT_PRODUCTION_DEPLOYMENT_TPPERIOD_REPORT`. Documentación LOCAL de un único archivo
+> (docs/09-HANDOFF/CURRENT-STATE.md). NO staging · NO commit · NO push · NO producción.
+
+```text
+=== CIERRE REAL VERIFICADO — MOODLE_TP_PERIOD_METADATA_REPORT_INTEGRATION ===
+UNIT_LOCAL_FINAL_STATUS = CLOSED_SUCCESS
+UNIT_LOCAL_CLOSURE      = CLOSED_SUCCESS
+GIT_CHECKPOINT_STATUS   = CLOSED_SUCCESS
+FINAL_COMMIT            = 67d492f4dcff358d0842150ca00879a8b8688676
+FINAL_REMOTE_COMMIT     = 67d492f4dcff358d0842150ca00879a8b8688676
+CADENA                  = 4c039f2 (plugin local_tpperiods) → c5df087 (migrador) →
+                          99783a2 (cierre migración) → 67d492f (integración reporte + cierre final)
+
+LOCAL_BRANCH            = feature/copia-local-moodle
+LOCAL_HEAD              = 67d492f4dcff358d0842150ca00879a8b8688676
+REMOTE_HEAD             = 67d492f4dcff358d0842150ca00879a8b8688676
+LOCAL_HEAD_EQUALS_REMOTE_HEAD = YES
+TRACKED_WORKTREE_STATUS = CLEAN (antes de esta rectificación documental)
+UNTRACKED_PRESERVED     = AUXILIAR/ · SDD_VERIFICATION_DELIVERABLE.md
+
+=== UNIT_PRODUCTION_DEPLOYMENT_TPPERIOD_REPORT — PLANNING (DISCOVERY+SPEC+DESIGN) ===
+SDD_PHASE               = DISCOVERY + SPECIFICATION + DESIGN (COMPLETED · sin implementación)
+ARTIFACT_STORE          = engram
+SDD_ARTIFACTS           = explore #414 · spec #416 · design #417 (rectificado) ·
+                          review-ledger #418 · summary #419
+
+DEPLOYMENT_FILE_MANIFEST = 8 archivos funcionales/plugin identificados (file-exact)
+  A) moodle/reportes/reporteTPporCurso.php  (tracked · 67d492f)
+  B) moodle/local/tpperiods/ (7 tracked · 4c039f2/c5df087):
+       version.php · db/install.xml · lib.php · manage.php ·
+       lang/en/local_tpperiods.php · lang/es/local_tpperiods.php ·
+       cli/migrate_period_metadata_2026.php
+  NO desplegar = AUXILIAR/** · SDD_VERIFICATION_DELIVERABLE.md (STALE_INVALID) · db-dumps/** ·
+       moodle/reportes/tests/index.php (WEBSHELL confirmada, git-ignored) · scripts legacy/backups reportes/
+  NUNCA rsync de directorio reportes/ o local/ (propagaría webshell + legacy).
+
+PLUGIN_DEPENDENCIES      = local_tpperiods → schema (2 tablas) → metadata (63 cmperiod + 6 period) →
+                           reporteTPporCurso.php (último; fail-closed si plugin ausente)
+
+DATABASE_SCHEMA_CHANGE_REQUIRED = YES  (local_tpperiods_cmperiod · local_tpperiods_period)
+DATABASE_MIGRATION_REQUIRED     = YES  (metadata RE-DERIVADA de precheck fresco; NO mappings locales)
+GRADE_DATA_CHANGE_EXPECTED      = NO   (migración escribe SOLO las 2 tablas del plugin)
+PRODUCTION_CURRENT_STATE_KNOWN  = NO   (sin contacto con producción en esta fase)
+PRODUCTION_READONLY_PRECHECK_REQUIRED = YES (diseñado · NO ejecutado)
+
+MAINTENANCE_REQUIRED     = YES
+MOODLE_UPGRADE_REQUIRED  = YES (admin/cli/upgrade.php procesa install.xml)
+CACHE_PURGE_REQUIRED     = YES (code caches + data caches)
+BACKUP_REQUIRED          = YES (B1 dump DB · B2 reporte · B3 plugin dir · B4 tablas+baseline invariantes+moodledata)
+ROLLBACK_AVAILABLE       = YES (CODE / PLUGIN / DATABASE_SCHEMA / METADATA · GRADES=N/A sin writes)
+
+GATE_PRODUCTION_DEPLOYMENT             = AWAITING_AUTHORIZATION
+GATE_PRODUCTION_CONTROLLED_GRADE_WRITE = AWAITING_SEPARATE_AUTHORIZATION
+GATE_MOODLE_PRODUCTION_CUTOVER         = AWAITING_AUTHORIZATION
+PRODUCTION_IMPLEMENTATION              = NOT_AUTHORIZED
+
+NEXT_REQUIRED_STEP = PRECHECK READ-ONLY DE PRODUCCIÓN, sujeto a autorización humana separada,
+  para obtener baseline real (DB name · prefix · versión core · mappings cmid/forumid reales ·
+  versión plugin · baseline grades) y re-derivar la migración sin reutilizar mappings locales.
+
+=== RECTIFICACIÓN ACTUAL (documentación-only) ===
+GATE_RECTIFICATION_CURRENT_STATE = VERIFIED
+FILES_CHANGED_COUNT = 1
+ONLY_FILE_CHANGED   = docs/09-HANDOFF/CURRENT-STATE.md
+NO_CODE_CHANGED     = YES
+DATABASE_CHANGED    = NO
+DOCKER_CHANGED      = NO
+MOODLEDATA_CHANGED  = NO
+PRODUCTION_TOUCHED  = NO
+
+GATE_GIT_CHECKPOINT        = AWAITING_AUTHORIZATION
+GATE_PRODUCTION_PRECHECK   = AWAITING_AUTHORIZATION
+GATE_PRODUCTION_DEPLOYMENT = AWAITING_AUTHORIZATION
+```
 
