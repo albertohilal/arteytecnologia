@@ -2432,3 +2432,112 @@ GIT_ADD = NO · GIT_COMMIT = NO · GIT_PUSH = NO
 NEXT_ACTION = AWAIT CLOSURE DOCUMENTATION GIT CHECKPOINT AUTHORIZATION (staging → commit → push separados)
 ```
 
+---
+
+## MOODLE_TP_PERIOD_METADATA_REPORT_INTEGRATION — VERIFIED AWAITING GIT CHECKPOINT — 2026-08-31
+
+> This section is the CURRENT authoritative operational state for this UNIT.
+> It supersedes older operational descriptions ONLY as current state; prior
+> sections are preserved unchanged as historical evidence.
+
+### UNIT / ENVIRONMENT
+- UNIT = MOODLE_TP_PERIOD_METADATA_REPORT_INTEGRATION
+- ENVIRONMENT = LOCAL_ONLY
+- MOODLE_VERSION = 3.9.1+ Build 20200814
+- MOODLE_BRANCH = 39
+- PHP_VERSION = 7.4.33
+- ACTIVE_DB = moodle_prod_20260829
+
+### IMPLEMENTATION RESULT
+- REPORT = moodle/reportes/reporteTPporCurso.php
+- PLUGIN_METADATA_SOURCE = local_tpperiods
+- PERIOD_MODEL = METADATA_DRIVEN
+- COURSE15 = P1=9, P2=19
+- COURSE19 = P1=9, P2=7
+- COURSE20 = P1=14, P2=5
+- PERIOD_STATUS = 15/P1=CLOSED_FOR_PLANNING, 15/P2=OPEN, 19/P1=CLOSED_FOR_PLANNING, 19/P2=OPEN, 20/P1=CLOSED_FOR_PLANNING, 20/P2=OPEN
+- MEMBERSHIP_SOURCE = ONLY explicit local_tpperiods metadata (NOT title parser, NOT grade_forum)
+- DISPLAY != MEMBERSHIP · UNASSIGNED != ungradable
+- DENOMINATOR = ALL explicitly mapped CMIDs for the selected period
+
+### PERIOD UI / ROLE SEMANTICS
+- TEACHER: period suggestion may display when readiness permits; saved manual period grade is distinct from suggestion.
+- STUDENT: computed suggestion is NEVER shown; only saved period grade or "—".
+- EXCEL: computed suggestion is NEVER exported; only persisted saved period grade; blank if none.
+
+### RECTIFICATION H — FAIL CLOSED (VERIFIED_SUCCESS)
+- ROOT_CAUSE = build_period_state() failed closed only on get_configured_periods; later get_period_cmids / get_period_status failures could be substituted (empty / synthetic) while overall state remained OK.
+- RECTIFICATION = get_period_cmids failure → immediate PLUGIN_ERROR; get_period_status failure → immediate PLUGIN_ERROR; partial metadata never consumed; PERIOD / UNASSIGNED unavailable under metadata error; selector metadatausable gating forces FLAT/no-period fallback.
+- FAILURE_INJECTION = SCENARIO_A_NORMAL=PASS, SCENARIO_B_CMIDS_FAILURE=PASS, SCENARIO_C_STATUS_FAILURE=PASS
+- H_FAIL_CLOSED_PRESERVED = YES
+
+### UNASSIGNED UI RECTIFICATION (VERIFIED_SUCCESS)
+- Defect = ?courseid=15&period=u could resolve UNASSIGNED while selector showed "Cuatrimestre 1" (no reportable unassigned activities); generic empty message wrongly claimed the course had no TP forums.
+- Rectified = VIEW_KIND_UNASSIGNED active → selector shows "Sin cuatrimestre"; direct period=u remains UNASSIGNED; empty UNASSIGNED = "No hay actividades TP sin cuatrimestre."; empty PERIOD = "No hay actividades TP en el cuatrimestre seleccionado."; FLAT text preserved.
+- No metadata changed to populate the view.
+
+### MANUAL ACCEPTANCE MATRIX (PASS)
+- TEST_1_TEACHER_COURSE15_P1 = PASS (denominator 9, teacher suggestions, no write)
+- TEST_2_STUDENT_NO_SUGGESTION_LEAK = PASS (saved grade or "—" only, no controls)
+- TEST_3_UNASSIGNED = PASS ("Sin cuatrimestre" + "No hay actividades TP sin cuatrimestre.")
+- POST_RECTIFICATION_P1_REGRESSION = PASS
+- POST_RECTIFICATION_P2_REGRESSION = PASS (P2 OPEN → "Nota sugerida: —")
+- TEST_4_COURSE20_PERIOD_AWARE = PASS (denominator 14, legacy reportable preserved, no parser regression)
+- TEST_5_EXCEL_PERIOD_EXPORT = PASS (reporteTP_MedAud-26_20260831_171407.xlsx; A1:L18; L1="Cuatrimestre 1"; L2:L18 blank; EXCEL_SUGGESTION_LEAK=NO)
+
+### CONTROLLED WRITE VERIFICATION (PASS)
+- TP savegrade = course15 userid=151 cmid=243 forumid=158; flow 7→8→7; final target restored exactly.
+- SAVEPERIODGRADE = temporary periodo1-15 (grade_item id=132) created/tested/cleared via real form, deleted via official grade_item::delete(); no direct SQL grade write/delete.
+- FINAL_RECONCILIATION = grade_regrade_final_grades(15) executed exactly once (separate explicit authorization). Final: periodo1-15 ABSENT, course15 needsupdate=0.
+
+### FINAL DB / GRADEBOOK BASELINE
+- CRITICAL_COUNTS = grade_items=109, grade_grades=1687, forum_grades=584, forum=216, course_modules=314, forum_discussions=2330, forum_posts=2745, local_tpperiods_cmperiod=63, local_tpperiods_period=6
+- COURSE15_GRADE_ROWS = 480 · COURSE15_GRADE_CHECKSUM = 38c55efd81d02469f4699b91bc4c2debb027660e21fb4bf26558e2b3ebf47199
+- COURSE_TOTAL_GRADE_ROWS = 16 · COURSE_TOTAL_CHECKSUM = d2744dc5f26d88a5b0eddf6a0b6fc37482394a7e4b2e5874aca7cadab9e9c37e
+- PRE_POST_CHECKSUM_MATCH = YES
+- DATABASE_FINAL_OPERATIONAL_STATE = RECONCILED_TO_BASELINE
+- GRADEBOOK_FINAL_OPERATIONAL_STATE = RECONCILED_TO_BASELINE
+- UNEXPECTED_GRADE_CHANGES = NONE
+
+### DATABASE CHANGE ACCOUNTING
+- DATABASE_CHANGED_ACROSS_UNIT = YES — controlled Moodle API writes during authorized verification (temporary saveperiodgrade activity, grade_item lifecycle, final official regrade reconciliation); legitimate append-only history preserved, NOT normalized/deleted.
+
+### KNOWN CONFIGURATION GAP (NOT auto-fixed)
+- course15 cmid=264 forumid=173 TP-213-01, metadata P2, grade_forum=0, no grade_item. Detected, not auto-fixed. P2 OPEN → suggestion not ready/final. Do NOT modify this data.
+
+### DEFERRED HARDENING
+- D_DISPOSITION = DEFERRED_HARDENING (readiness treats grade_forum>0 as gradable; current data 0/10; future: enforce 0..10 range).
+- G_DISPOSITION = DEFERRED_HARDENING (saveperiodgrade gates numeric configured period + permissions + metadata, no explicit VIEW_KIND===PERIOD check; not a current security defect; future defense-in-depth).
+- Neither D nor G blocks closure of this UNIT.
+
+### INVALID / EXCLUDED EVIDENCE
+- SDD_VERIFICATION_DELIVERABLE.md = STALE_INVALID_EVIDENCE (old DB `moodle`, grade_items=49, metadata tables absent) — MUST NOT be staged/committed.
+- AUXILIAR/** = UNTRACKED_EVIDENCE (DO_NOT_STAGE, DO_NOT_DELETE, DO_NOT_MODIFY).
+- db-dumps/** = BACKUP_DATA (DO_NOT_STAGE).
+- /tmp snapshots/harnesses = TEMPORARY_EVIDENCE (NOT_GIT_CANDIDATES).
+
+### GIT STATE
+- BRANCH = feature/copia-local-moodle
+- HEAD = 99783a284c45f7a3157aee4086c5f7f544480ee4
+- REMOTE = github-viejo → https://github.com/albertohilal/arteytecnologia.git
+- Expected tracked modifications after this doc action:
+  - M moodle/reportes/reporteTPporCurso.php
+  - M docs/09-HANDOFF/CURRENT-STATE.md
+- Untracked exclusions remain: AUXILIAR/, SDD_VERIFICATION_DELIVERABLE.md
+- Nothing staged.
+
+### CHECKPOINT CANDIDATES (future, NOT staged in this action)
+- moodle/reportes/reporteTPporCurso.php
+- docs/09-HANDOFF/CURRENT-STATE.md
+- Explicit exclusions: AUXILIAR/**, SDD_VERIFICATION_DELIVERABLE.md, db-dumps/**, /tmp/**
+
+### SDD CLOSURE STATE
+- DISCOVERY=COMPLETE · SPECIFICATION=COMPLETE · DESIGN=COMPLETE · IMPLEMENTATION=COMPLETE · VERIFICATION=PASS · DOCUMENT_CURRENT_STATE=COMPLETED
+- RECTIFICATION_H=VERIFIED_SUCCESS · UNASSIGNED_UI_RECTIFICATION=VERIFIED_SUCCESS · MANUAL_ACCEPTANCE_MATRIX=PASS · CONTROLLED_WRITE_VERIFICATION=PASS
+- BLOCKERS=NONE · REQUIREMENTS_UNVERIFIED=NONE
+- IMPORTANT_CHANGE_STATUS = AWAITING_GIT_CHECKPOINT
+- GATE_REPORT_INTEGRATION_GIT_CHECKPOINT = AWAITING_AUTHORIZATION
+- COMMIT=NOT_AUTHORIZED · PUSH=NOT_AUTHORIZED
+- FINAL_CLOSED_SUCCESS = NO (requires PREPARE_GIT_CHECKPOINT → staging → commit → push → LOCAL_HEAD==REMOTE_HEAD → CLOSE)
+- PRODUCTION_IMPACT = NONE · GATE_PRODUCTION_DEPLOYMENT = AWAITING_AUTHORIZATION
+

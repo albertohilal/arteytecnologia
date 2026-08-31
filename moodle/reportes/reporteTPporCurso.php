@@ -10,6 +10,14 @@ require_once($CFG->libdir . '/excellib.class.php');
 require_once($CFG->libdir . '/gradelib.php');
 require_once($CFG->dirroot . '/mod/forum/lib.php');
 
+// Safely load the local_tpperiods plugin lib.php. When the plugin is absent or
+// its lib.php is missing, period features must fail closed (flat view, no period
+// grade UI), never produce a fatal page error.
+$reporte_tp_tpperiods_lib = $CFG->dirroot . '/local/tpperiods/lib.php';
+if (file_exists($reporte_tp_tpperiods_lib)) {
+    require_once($reporte_tp_tpperiods_lib);
+}
+
 // Parámetros.
 $courseid = optional_param('courseid', 0, PARAM_INT);
 $download = optional_param('download', '', PARAM_TEXT);
@@ -18,6 +26,7 @@ $setupdone = optional_param('setupdone', 0, PARAM_INT);
 $periodsaved = optional_param('periodsaved', 0, PARAM_INT);
 $gradeerror = optional_param('gradeerror', '', PARAM_ALPHANUMEXT);
 $action = optional_param('action', '', PARAM_ALPHA);
+$period = optional_param('period', '', PARAM_RAW_TRIMMED);
 
 /**
  * Devuelve permisos operativos del usuario para este reporte.
@@ -67,6 +76,173 @@ function reporte_tp_role_flags(context_course $context, int $userid): array {
         'isstudentonly' => $isstudentonly,
         'caneditreport' => $hasgraderrole && !$isstudentonly,
     ];
+}
+
+// ===========================================================================
+// MOODLE_TP_PERIOD_METADATA_REPORT_INTEGRATION - VIEW MODEL & SAFE BOUNDARY
+// ===========================================================================
+// Canonical view kinds for the TP period report.
+define('VIEW_KIND_PERIOD', 'period');
+define('VIEW_KIND_UNASSIGNED', 'unassigned');
+define('VIEW_KIND_FLAT', 'flat');
+
+// Period ID canonical values.
+define('PERIOD_ID_NONE', 'NONE');
+define('PERIOD_ID_1', 1);
+define('PERIOD_ID_2', 2);
+
+// Plugin safe boundary: all local_tpperiods_get_* calls must be wrapped
+// with try/catch(Throwable) to guarantee fail-closed behavior: never a
+// fatal error, always OK+data or UNAVAILABLE/ERROR envelope.
+function reporte_tp_plugin_safe_call(callable $fn, array $params = []): object {
+    try {
+        // Plugin APIs return raw int/array values; safe_call wraps them as OK + data.
+        $result = $fn(...array_values($params));
+        return (object) ['status' => 'OK', 'data' => $result];
+    } catch (Throwable $e) {
+        // Fail-closed: never propagate exceptions; return UNAVAILABLE envelope.
+        return (object) ['status' => 'UNAVAILABLE', 'data' => null, 'error' => $e->getMessage()];
+    }
+}
+
+// Centralized read-only period state per course, built from local_tpperiods
+// plugin APIs only. Distinguishes: PLUGIN_AVAILABLE, CONFIGURED_PERIODS,
+// PERIOD_TO_CMIDS, CMID_TO_PERIOD, STATUS_BY_PERIOD, PLUGIN_ERROR.
+function reporte_tp_build_period_state(int $courseid): object {
+    $state = (object) [
+        'status' => 'ERROR',
+        'plugin_available' => false,
+        'configured_periods' => [],
+        'period_to_cmids' => [],
+        'cmid_to_period' => [],
+        'status_by_period' => [],
+        'error' => null,
+    ];
+
+    // Plugin availability = the API entry point is loadable.
+    if (!function_exists('local_tpperiods_get_configured_periods')) {
+        $state->status = 'PLUGIN_ERROR';
+        $state->error = 'local_tpperiods plugin not available';
+        return $state;
+    }
+
+    $state->plugin_available = true;
+
+    // Configured periods (1|2) from the explicit configuration table.
+    $configured = reporte_tp_plugin_safe_call('local_tpperiods_get_configured_periods', [$courseid]);
+    if ($configured->status !== 'OK') {
+        $state->status = 'PLUGIN_ERROR';
+        $state->error = $configured->error ?? 'failed to read configured periods';
+        return $state;
+    }
+    $state->configured_periods = array_values(array_map('intval', (array) $configured->data));
+
+    // Build PERIOD_TO_CMIDS and CMID_TO_PERIOD from metadata-assigned CMIDs
+    // (independent of visibility/reportability/grade_forum/submission).
+    // FAIL CLOSED: any required per-period API failure invalidates the WHOLE
+    // course period state. Partial membership/denominator must never be
+    // consumed as authoritative, and a failed period's CMIDs must never be
+    // silently treated as UNASSIGNED.
+    foreach ($state->configured_periods as $period) {
+        $cmidsresult = reporte_tp_plugin_safe_call('local_tpperiods_get_period_cmids', [$courseid, $period]);
+        if ($cmidsresult->status !== 'OK') {
+            $state->status = 'PLUGIN_ERROR';
+            $state->error = $cmidsresult->error ?? 'failed to read period cmids';
+            return $state;
+        }
+        $cmids = array_values(array_map('intval', (array) $cmidsresult->data));
+        $state->period_to_cmids[$period] = $cmids;
+
+        foreach ($cmids as $cmid) {
+            $state->cmid_to_period[$cmid] = $period;
+        }
+
+        $statusresult = reporte_tp_plugin_safe_call('local_tpperiods_get_period_status', [$courseid, $period]);
+        if ($statusresult->status !== 'OK') {
+            $state->status = 'PLUGIN_ERROR';
+            $state->error = $statusresult->error ?? 'failed to read period status';
+            return $state;
+        }
+        $state->status_by_period[$period] = (int) $statusresult->data;
+    }
+
+    $state->status = 'OK';
+
+    return $state;
+}
+
+// ---------------------------------------------------------------------------
+// View kind determination: given a courseid, the configured metadata periods
+// and an optional selector token, resolve the canonical VIEW_KIND and
+// SELECTED_PERIOD_ID.
+//
+// Canonical selector tokens:
+//   "courseid:1"  -> PERIOD / 1
+//   "courseid:2"  -> PERIOD / 2
+//   "courseid:u"  -> UNASSIGNED / NONE
+//   "courseid"    -> FLAT / NONE
+//   null          -> default (first configured period, else FLAT)
+// ---------------------------------------------------------------------------
+function reporte_tp_resolve_view_kind(int $courseid, array $configured_periods, ?string $sel = null): object {
+    $result = (object) [
+        'view_kind' => VIEW_KIND_FLAT,
+        'selected_period_id' => PERIOD_ID_NONE,
+        'unassigned_view_token' => null,
+    ];
+
+    $token = ($sel === null) ? '' : trim($sel);
+
+    // "courseid:u" -> UNASSIGNED.
+    if (preg_match('/^(\d+):u$/i', $token, $m)) {
+        if ((int)$m[1] === $courseid) {
+            $result->view_kind = VIEW_KIND_UNASSIGNED;
+            $result->selected_period_id = PERIOD_ID_NONE;
+            $result->unassigned_view_token = 'u';
+        }
+        return $result;
+    }
+
+    // "courseid:1" / "courseid:2" -> PERIOD (only if configured in metadata).
+    if (preg_match('/^(\d+):([12])$/i', $token, $m)) {
+        if ((int)$m[1] === $courseid) {
+            $pid = (int)$m[2];
+            if (in_array($pid, $configured_periods, true)) {
+                $result->view_kind = VIEW_KIND_PERIOD;
+                $result->selected_period_id = $pid;
+            }
+            // else: invalid period -> FLAT / NONE (no period column).
+        }
+        return $result;
+    }
+
+    // "courseid" (bare, no colon) -> FLAT / NONE.
+    if (preg_match('/^(\d+)$/', $token, $m)) {
+        if ((int)$m[1] === $courseid) {
+            $result->view_kind = VIEW_KIND_FLAT;
+            $result->selected_period_id = PERIOD_ID_NONE;
+        }
+        return $result;
+    }
+
+    // Truly unspecified (no token) -> default first configured period, else FLAT.
+    if (!empty($configured_periods)) {
+        $result->view_kind = VIEW_KIND_PERIOD;
+        $result->selected_period_id = $configured_periods[0];
+    } else {
+        $result->view_kind = VIEW_KIND_FLAT;
+    }
+
+    return $result;
+}
+
+// ---------------------------------------------------------------------------
+// PERIOD_GRADE_VIEW_ACTIVE: only true when VIEW_KIND===PERIOD AND
+// SELECTED_PERIOD_ID is in configured metadata periods.
+// ---------------------------------------------------------------------------
+function reporte_tp_period_grade_view_active(string $view_kind, $selected_period_id, array $configured_periods): bool {
+    return $view_kind === VIEW_KIND_PERIOD
+        && is_int($selected_period_id)
+        && in_array($selected_period_id, $configured_periods, true);
 }
 
 // ===========================================================================
@@ -266,37 +442,6 @@ function reporte_tp_course_supports_period_model(int $courseid): bool {
     return reporte_tp_course_policy($courseid) === 'canonical';
 }
 
-// Período (1|2) derivado del parser canónico, o null si no es VALID_GRADED_TP.
-function reporte_tp_get_period_of_forum(object $forum): ?int {
-    if (!reporte_tp_is_valid_graded_tp($forum)) {
-        return null;
-    }
-
-    $parsed = parse_tp_identifier($forum->name);
-
-    return $parsed['period'] ?? null;
-}
-
-// Foros de un período: VALID_GRADED_TP + período desde el parser + grade_forum === 10.0.
-// Cada TP permanece independiente (no se agrupa por Encuentro).
-function reporte_tp_collect_period_forums(array $forums, int $period): array {
-    $collected = [];
-    foreach ($forums as $forum) {
-        if (!reporte_tp_is_valid_graded_tp($forum)) {
-            continue;
-        }
-        if ((float)$forum->grade_forum !== 10.0) {
-            continue;
-        }
-        if (reporte_tp_get_period_of_forum($forum) !== $period) {
-            continue;
-        }
-        $collected[$forum->id] = $forum;
-    }
-
-    return $collected;
-}
-
 // Nota de período 0-10: redondeo half-up de (entregados / total) * 10.
 function reporte_tp_compute_period_grade(int $delivered, int $total): int {
     if ($total === 0) {
@@ -304,30 +449,6 @@ function reporte_tp_compute_period_grade(int $delivered, int $total): int {
     }
 
     return (int)round(($delivered / $total) * 10);
-}
-
-// Conteo de entregados/total y nota del período por estudiante. Entregado = calificación de foro completo >= 4.
-function reporte_tp_compute_period_grades(array $students, array $periodforums, array $forumgradevalues): array {
-    $result = [];
-    foreach ($students as $student) {
-        $uid = (int)$student->id;
-        $delivered = 0;
-        $total = count($periodforums);
-
-        foreach ($periodforums as $fid => $forum) {
-            if (($forumgradevalues[$fid][$uid] ?? 0) >= 4) {
-                $delivered++;
-            }
-        }
-
-        $result[$uid] = [
-            'delivered' => $delivered,
-            'total' => $total,
-            'grade' => reporte_tp_compute_period_grade($delivered, $total),
-        ];
-    }
-
-    return $result;
 }
 
 // Encuentra (o crea) el grade_item manual del período por idnumber periodo{period}-{courseid}.
@@ -596,6 +717,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'savegrade') {
     $userid = required_param('userid', PARAM_INT);
     $gradevalue = optional_param('grade', '', PARAM_RAW_TRIMMED);
     $expectedprevious = optional_param('expected_previous_grade', '', PARAM_RAW_TRIMMED);
+    $postperiod = optional_param('period', '', PARAM_RAW_TRIMMED);
 
     $course = $DB->get_record('course', ['id' => $postcourseid], '*', MUST_EXIST);
     require_login($course);
@@ -615,7 +737,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'savegrade') {
     };
 
     // Termina la petición con el código de error dado: JSON si es async, redirect si no.
-    $responderror = function (string $code, ?array $extra = null) use ($async, $postcourseid, $forumid, $userid, $releaselock) {
+    $responderror = function (string $code, ?array $extra = null) use ($async, $postcourseid, $forumid, $userid, $postperiod, $releaselock) {
         $releaselock();
         if ($async) {
             $payload = [
@@ -633,10 +755,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'savegrade') {
             reporte_tp_emit_json_response($payload, $code === 'conflict' ? 409 : 200);
         }
 
-        redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+        $redirectparams = [
             'courseid' => $postcourseid,
             'gradeerror' => $code,
-        ]));
+        ];
+        if ($postperiod !== '') {
+            $redirectparams['period'] = $postperiod;
+        }
+
+        redirect(new moodle_url('/reportes/reporteTPporCurso.php', $redirectparams));
     };
 
     // Foro válido y perteneciente al curso (courseid/forumid scope).
@@ -906,10 +1033,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'savegrade') {
         ]);
     }
 
-    redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+    $successparams = [
         'courseid' => $postcourseid,
         'saved' => 1
-    ]));
+    ];
+    if ($postperiod !== '') {
+        $successparams['period'] = $postperiod;
+    }
+
+    redirect(new moodle_url('/reportes/reporteTPporCurso.php', $successparams));
     } finally {
         // (RECTIFICATION R5) Liberación idempotente y segura en excepciones; no relanza
         // ni libera dos veces si un camino terminal ya liberó el lock.
@@ -922,16 +1054,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'saveperiodgrade') {
     require_sesskey();
 
     $postcourseid = required_param('courseid', PARAM_INT);
-
-    // (COURSE-AWARE) PERIOD_MODEL = COURSE_15_ONLY. Denegar ANTES de cualquier escritura
-    // (reporte_tp_ensure_period_grade_item / reporte_tp_write_period_grade /
-    //  reporte_tp_delete_period_grade / start_delegated_transaction).
-    if (!reporte_tp_course_supports_period_model($postcourseid)) {
-        redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
-            'courseid' => $postcourseid,
-            'gradeerror' => 'nopermission'
-        ]));
-    }
+    $postperiod = required_param('period', PARAM_INT);
 
     $course = $DB->get_record('course', ['id' => $postcourseid], '*', MUST_EXIST);
     require_login($course);
@@ -948,90 +1071,125 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'saveperiodgrade') {
 
     require_capability('mod/forum:grade', $coursecontext);
 
+    // (METADATA + COURSE-AWARE) PERIOD_GRADE_WRITE_POLICY.
+    // saveperiodgrade requires a usable metadata state, a known writable course
+    // policy and a PERIOD view with a configured numeric period.
+    if (!reporte_tp_course_allows_savegrade($postcourseid)) {
+        redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+            'courseid' => $postcourseid,
+            'gradeerror' => 'nopermission'
+        ]));
+    }
+
+    if ($postperiod !== 1 && $postperiod !== 2) {
+        redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+            'courseid' => $postcourseid,
+            'gradeerror' => 'invalid'
+        ]));
+    }
+
+    $periodstate = reporte_tp_build_period_state($postcourseid);
+    if ($periodstate->status !== 'OK' || !$periodstate->plugin_available) {
+        redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+            'courseid' => $postcourseid,
+            'gradeerror' => 'nopermission'
+        ]));
+    }
+
+    if (!in_array($postperiod, $periodstate->configured_periods, true)) {
+        redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+            'courseid' => $postcourseid,
+            'gradeerror' => 'invalid'
+        ]));
+    }
+
     // Recuperación 2-D segura: data_submitted() aplica fix_utf8() recursivo sobre $_POST.
     $submitted = data_submitted();
     $periodgrade = is_object($submitted) ? ($submitted->periodgrade ?? []) : [];
 
     if (!is_array($periodgrade)) {
-        $periodgrade = [];
+        redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+            'courseid' => $postcourseid,
+            'gradeerror' => 'invalid'
+        ]));
+    }
+
+    // Single-period strict: the payload may only carry the requested period.
+    $periodkeys = array_keys($periodgrade);
+    if (count($periodkeys) !== 1 || (int)reset($periodkeys) !== $postperiod) {
+        redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+            'courseid' => $postcourseid,
+            'gradeerror' => 'invalid'
+        ]));
+    }
+
+    $userentries = $periodgrade[$postperiod] ?? [];
+    if (!is_array($userentries)) {
+        redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+            'courseid' => $postcourseid,
+            'gradeerror' => 'invalid'
+        ]));
     }
 
     // Validar TODO antes de escribir cualquier cosa.
     $writes = [];
     $deletes = [];
-    foreach ($periodgrade as $periodkey => $userentries) {
-        $period = (int)$periodkey;
+    foreach ($userentries as $uidkey => $rawvalue) {
+        $uid = (int)$uidkey;
 
-        if ($period !== 1 && $period !== 2) {
+        if ($uid <= 0) {
+            redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+                'courseid' => $postcourseid,
+                'gradeerror' => 'invaliduser'
+            ]));
+        }
+
+        if (!$DB->get_record('user', ['id' => $uid], 'id', IGNORE_MISSING)) {
+            redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+                'courseid' => $postcourseid,
+                'gradeerror' => 'invaliduser'
+            ]));
+        }
+
+        if (!is_enrolled($coursecontext, $uid)) {
+            redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
+                'courseid' => $postcourseid,
+                'gradeerror' => 'notenrolled'
+            ]));
+        }
+
+        $value = trim((string)$rawvalue);
+
+        if ($value === '') {
+            // Campo vacío: eliminar el override persistido si existe (no-op si no hay).
+            $deletes[] = ['period' => $postperiod, 'uid' => $uid];
+            continue;
+        }
+
+        if (!preg_match('/^\d{1,2}$/', $value)) {
             redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
                 'courseid' => $postcourseid,
                 'gradeerror' => 'invalid'
             ]));
         }
 
-        if (!is_array($userentries)) {
+        $grade = (int)$value;
+
+        if ($grade < 0 || $grade > 10) {
             redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
                 'courseid' => $postcourseid,
-                'gradeerror' => 'invalid'
+                'gradeerror' => 'range'
             ]));
         }
 
-        foreach ($userentries as $uidkey => $rawvalue) {
-            $uid = (int)$uidkey;
-
-            if ($uid <= 0) {
-                redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
-                    'courseid' => $postcourseid,
-                    'gradeerror' => 'invaliduser'
-                ]));
-            }
-
-            if (!$DB->get_record('user', ['id' => $uid], 'id', IGNORE_MISSING)) {
-                redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
-                    'courseid' => $postcourseid,
-                    'gradeerror' => 'invaliduser'
-                ]));
-            }
-
-            if (!is_enrolled($coursecontext, $uid)) {
-                redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
-                    'courseid' => $postcourseid,
-                    'gradeerror' => 'notenrolled'
-                ]));
-            }
-
-            $value = trim((string)$rawvalue);
-
-            if ($value === '') {
-                // Campo vacío: eliminar el override persistido si existe (no-op si no hay).
-                $deletes[] = ['period' => $period, 'uid' => $uid];
-                continue;
-            }
-
-            if (!preg_match('/^\d{1,2}$/', $value)) {
-                redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
-                    'courseid' => $postcourseid,
-                    'gradeerror' => 'invalid'
-                ]));
-            }
-
-            $grade = (int)$value;
-
-            if ($grade < 0 || $grade > 10) {
-                redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
-                    'courseid' => $postcourseid,
-                    'gradeerror' => 'range'
-                ]));
-            }
-
-            $writes[] = ['period' => $period, 'uid' => $uid, 'grade' => $grade];
-        }
+        $writes[] = ['period' => $postperiod, 'uid' => $uid, 'grade' => $grade];
     }
 
     if (empty($writes) && empty($deletes)) {
         // Nada que escribir (todos los campos vacíos): no-op silencioso.
         redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
-            'courseid' => $postcourseid
+            'courseid' => $postcourseid,
+            'period' => $postperiod
         ]));
     }
 
@@ -1057,12 +1215,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'saveperiodgrade') {
 
         redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
             'courseid' => $postcourseid,
+            'period' => $postperiod,
             'gradeerror' => 'save'
         ]));
     }
 
     redirect(new moodle_url('/reportes/reporteTPporCurso.php', [
         'courseid' => $postcourseid,
+        'period' => $postperiod,
         'periodsaved' => 1
     ]));
 }
@@ -1110,6 +1270,11 @@ $caneditperiodgrade = false;
 $periodforums = [];
 $periodgrades = [];
 $savedperiodgrades = [];
+$configured_periods = [];
+$period_grade_view_active = false;
+$periodsuggestionready = false;
+$periodsuggestionwarning = false;
+$has_unassigned_reportable = false;
 
 if ($courseid) {
     $selected_course = $DB->get_record('course', ['id' => $courseid], '*', MUST_EXIST);
@@ -1134,50 +1299,103 @@ if ($courseid) {
     // El botón setupgrades solo aparece bajo policy course 15 (SETUPGRADES_SCOPE = COURSE_15_ONLY).
     $cansetupgrades = $canmanageactivities && reporte_tp_course_allows_setupgrades((int)$courseid);
 
-    // (COURSE-AWARE) PERIOD_MODEL = COURSE_15_ONLY.
-    $periodmodelsupported = reporte_tp_course_supports_period_model((int)$courseid);
+    // (COURSE-AWARE + METADATA) Build the read-only period state from
+    // local_tpperiods metadata. This is the SINGLE runtime source for
+    // configured periods, period->cmids, cmid->period and status per period.
+    $periodstate = reporte_tp_build_period_state((int)$courseid);
 
-    $caneditperiodgrade = $periodmodelsupported && $roleflags['caneditreport'] && has_capability('mod/forum:grade', $coursecontext);
+    // FAIL CLOSED: consume metadata only when the whole period state is usable.
+    // On any metadata failure force FLAT / no-period behavior — never PERIOD or
+    // UNASSIGNED, so no misleading empty/partial view or denominator is produced.
+    $metadatausable = ($periodstate->status === 'OK');
+    $configured_periods = $metadatausable ? $periodstate->configured_periods : [];
+    $cmid_to_period = $metadatausable ? $periodstate->cmid_to_period : [];
 
-    // Obtener solo foros TP-% visibles en la página del curso.
-$forums = $DB->get_records_sql("
-    SELECT 
-        f.id,
-        f.name,
-        f.course,
-        f.grade_forum,
-        f.type,
-        cm.id AS cmid
-    FROM {forum} f
-    JOIN {course_modules} cm 
-        ON cm.instance = f.id
-    JOIN {modules} m 
-        ON m.id = cm.module
-    JOIN {course_sections} cs
-        ON cs.id = cm.section
-    WHERE f.course = :cid
-      AND f.name LIKE :prefix
-      AND m.name = :modname
-      AND cm.course = f.course
-      AND cm.visible = 1
-      AND cm.visibleoncoursepage = 1
-      AND cm.deletioninprogress = 0
-      AND cs.course = f.course
-      AND cs.visible = 1
-      AND FIND_IN_SET(cm.id, cs.sequence) > 0
-    ORDER BY f.name
-", [
-    'cid' => $courseid,
-    'prefix' => 'TP-%',
-    'modname' => 'forum'
-]);
+    // Resolve the canonical view kind + selected period from the request model.
+    // courseid:1 -> PERIOD/1 · courseid:2 -> PERIOD/2 · courseid:u -> UNASSIGNED/NONE
+    // courseid -> FLAT/NONE.
+    $sel = ($metadatausable && $period !== '') ? ($courseid . ':' . $period) : null;
+    $result = reporte_tp_resolve_view_kind((int)$courseid, $configured_periods, $sel);
+    $view_kind = $result->view_kind;
+    $selected_period_id = $result->selected_period_id;
 
-    // (COURSE-AWARE) El listado de actividades reportables se rige por la política
-    // del curso: canonical (course 15) o legacy-compatible (courses 19/20/unknown).
-    // Excel usa el mismo $forums y conserva exactamente el mismo set.
-    $forums = array_filter($forums, function (object $forum) use ($courseid): bool {
+    // PERIOD_GRADE_VIEW_ACTIVE gates every period-grade UI, calculation,
+    // form and Excel period column.
+    $period_grade_view_active = reporte_tp_period_grade_view_active($view_kind, $selected_period_id, $configured_periods);
+
+    // Derive period model support from view kind for backward compatibility.
+    $periodmodelsupported = $view_kind === VIEW_KIND_PERIOD;
+
+    // Filter forums by reportability (course-aware policy).
+    $all_forums = $DB->get_records_sql("
+        SELECT 
+            f.id,
+            f.name,
+            f.course,
+            f.grade_forum,
+            f.type,
+            cm.id AS cmid
+        FROM {forum} f
+        JOIN {course_modules} cm 
+            ON cm.instance = f.id
+        JOIN {modules} m 
+            ON m.id = cm.module
+        JOIN {course_sections} cs
+            ON cs.id = cm.section
+        WHERE f.course = :cid
+          AND f.name LIKE :prefix
+          AND m.name = :modname
+          AND cm.course = f.course
+          AND cm.visible = 1
+          AND cm.visibleoncoursepage = 1
+          AND cm.deletioninprogress = 0
+          AND cs.course = f.course
+          AND cs.visible = 1
+          AND FIND_IN_SET(cm.id, cs.sequence) > 0
+        ORDER BY f.name
+    ", [
+        'cid' => $courseid,
+        'prefix' => 'TP-%',
+        'modname' => 'forum'
+    ]);
+
+    // Apply the same reportable activity filter (policy of course).
+    $all_forums = array_filter($all_forums, function (object $forum) use ($courseid): bool {
         return reporte_tp_is_reportable_activity($forum, (int)$courseid);
     });
+
+    // Select the rendering list from metadata membership only.
+    // - PERIOD: reportable forums whose cmid is metadata-assigned to the selected period.
+    // - UNASSIGNED: reportable forums with no metadata period assignment.
+    // - FLAT: all reportable forums (no period discrimination).
+    $forums = [];
+    $has_unassigned_reportable = false;
+    foreach ($all_forums as $forum) {
+        $cmid = (int)$forum->cmid;
+        $assignedperiod = $cmid_to_period[$cmid] ?? null;
+
+        if ($assignedperiod === null) {
+            $has_unassigned_reportable = true;
+        }
+
+        if ($view_kind === VIEW_KIND_PERIOD) {
+            if ($assignedperiod === $selected_period_id) {
+                $forums[$forum->id] = $forum;
+            }
+        } elseif ($view_kind === VIEW_KIND_UNASSIGNED) {
+            if ($assignedperiod === null) {
+                $forums[$forum->id] = $forum;
+            }
+        } else {
+            $forums[$forum->id] = $forum;
+        }
+    }
+
+    // Period grade edit permission: only under an active period grade view and
+    // with the required capability.
+    $caneditperiodgrade = $period_grade_view_active
+        && $roleflags['caneditreport']
+        && has_capability('mod/forum:grade', $coursecontext);
 
     // Determinar permisos de calificación y si falta habilitar algún foro.
     foreach ($forums as $forum) {
@@ -1291,15 +1509,98 @@ $forums = $DB->get_records_sql("
         $report_data[] = $row;
     }
 
-    // (COURSE-AWARE) PERIOD_MODEL = COURSE_15_ONLY. Solo course 15 deriva período:
-    // collect_period_forums + compute_period_grades + get_saved_period_grades.
-    // Courses 19/20/unknown: NO derivación de período, NO notas 0 artificiales.
-    if ($periodmodelsupported) {
-        for ($period = 1; $period <= 2; $period++) {
-            $periodforums[$period] = reporte_tp_collect_period_forums($forums, $period);
-            $periodgrades[$period] = reporte_tp_compute_period_grades($students, $periodforums[$period], $forumgradevalues);
-            $savedperiodgrades[$period] = reporte_tp_get_saved_period_grades((int)$courseid, $period);
+// (COURSE-AWARE + METADATA) Period grades (advisory suggestion + saved manual
+    // grade) under PERIOD_GRADE_VIEW_ACTIVE. Membership, denominator and status
+    // come exclusively from local_tpperiods metadata; never from the parser.
+    if ($period_grade_view_active) {
+        $selectedperiod = (int)$selected_period_id;
+        $periodstatus = (int)($periodstate->status_by_period[$selectedperiod] ?? LOCAL_TPPERIODS_STATUS_NOT_CONFIGURED);
+        $periodcmids = $periodstate->period_to_cmids[$selectedperiod] ?? [];
+        $perioddenominator = count($periodcmids);
+
+        // Map metadata cmids to their forum records (id + grade_forum),
+        // independent of visibility/reportability.
+        $periodforumid_by_cmid = [];
+        $periodforumgrade_forum = [];
+        if (!empty($periodcmids)) {
+            [$pinsql, $pinparams] = $DB->get_in_or_equal($periodcmids, SQL_PARAMS_NAMED, 'pcm');
+            $periodcmrows = $DB->get_records_sql("
+                SELECT cm.id AS cmid, f.id AS forumid, f.grade_forum
+                  FROM {course_modules} cm
+                  JOIN {modules} m ON m.id = cm.module AND m.name = 'forum'
+                  JOIN {forum} f ON f.id = cm.instance
+                 WHERE cm.id {$pinsql}
+            ", $pinparams);
+            foreach ($periodcmrows as $prow) {
+                $fid = (int)$prow->forumid;
+                $periodforumid_by_cmid[(int)$prow->cmid] = $fid;
+                $periodforumgrade_forum[$fid] = (float)$prow->grade_forum;
+            }
         }
+
+        // Suggestion-ready = CLOSED_FOR_PLANNING AND every metadata cmid is
+        // operationally gradable (grade_forum > 0). Otherwise withhold the
+        // numeric suggestion (OPEN or CLOSED-incomplete).
+        $periodsuggestionready = ($periodstatus === LOCAL_TPPERIODS_STATUS_CLOSED_FOR_PLANNING);
+        foreach ($periodcmids as $cmid) {
+            if (!isset($periodforumid_by_cmid[$cmid])) {
+                $periodsuggestionready = false;
+                break;
+            }
+            $fid = $periodforumid_by_cmid[$cmid];
+            if (($periodforumgrade_forum[$fid] ?? 0) <= 0) {
+                $periodsuggestionready = false;
+                break;
+            }
+        }
+
+        // Teacher warning when CLOSED but configuration incomplete.
+        $periodsuggestionwarning = ($periodstatus === LOCAL_TPPERIODS_STATUS_CLOSED_FOR_PLANNING) && !$periodsuggestionready;
+
+        // Fetch whole-forum grades for every gradable metadata forum, so the
+        // suggestion numerator is computed over metadata membership (not the
+        // visible display list).
+        if (!empty($studentids)) {
+            foreach ($periodforumid_by_cmid as $fid) {
+                if (($periodforumgrade_forum[$fid] ?? 0) <= 0) {
+                    continue;
+                }
+                if (!isset($forumgradevalues[$fid])) {
+                    $forumgradevalues[$fid] = [];
+                    $gradesinfo = grade_get_grades($courseid, 'mod', 'forum', $fid, $studentids);
+                    if (!empty($gradesinfo->items[1])) {
+                        foreach ($gradesinfo->items[1]->grades as $gradeduserid => $gradeobject) {
+                            $forumgradevalues[$fid][(int)$gradeduserid] = $gradeobject->grade;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Compute the advisory suggestion (teacher-only) when ready.
+        if ($periodsuggestionready) {
+            foreach ($students as $student) {
+                $uid = (int)$student->id;
+                $delivered = 0;
+                foreach ($periodcmids as $cmid) {
+                    $fid = $periodforumid_by_cmid[$cmid] ?? null;
+                    if ($fid === null || ($periodforumgrade_forum[$fid] ?? 0) <= 0) {
+                        continue;
+                    }
+                    if (($forumgradevalues[$fid][$uid] ?? 0) >= 4) {
+                        $delivered++;
+                    }
+                }
+                $periodgrades[$uid] = [
+                    'delivered' => $delivered,
+                    'total' => $perioddenominator,
+                    'grade' => reporte_tp_compute_period_grade($delivered, $perioddenominator),
+                ];
+            }
+        }
+
+        // Saved (manual) period grades for the selected period only.
+        $savedperiodgrades[$selectedperiod] = reporte_tp_get_saved_period_grades((int)$courseid, $selectedperiod);
     }
 }
 
@@ -1335,6 +1636,10 @@ if ($download === 'excel') {
             $worksheet->write_string($rownum, $col++, $forum->name, $formattext);
         }
 
+        if ($period_grade_view_active) {
+            $worksheet->write_string($rownum, $col++, 'Cuatrimestre ' . (int)$selected_period_id, $formattext);
+        }
+
         foreach ($report_data as $data) {
             $rownum++;
             $col = 0;
@@ -1354,6 +1659,12 @@ if ($download === 'excel') {
 
                 $col++;
             }
+
+            if ($period_grade_view_active) {
+                $savedperiodgrade = $savedperiodgrades[$selected_period_id][$data['userid']] ?? null;
+                $worksheet->write_string($rownum, $col, ($savedperiodgrade !== null) ? (string)$savedperiodgrade : '', $formattext);
+                $col++;
+            }
         }
 
         $workbook->close();
@@ -1365,6 +1676,12 @@ if ($download === 'excel') {
 $courseoptions = [];
 foreach ($courses as $course) {
     $courseoptions[$course->id] = $course->shortname;
+}
+
+// Params del enlace de Excel: preservan la vista seleccionada (course + period).
+$reporte_tp_excelparams = ['courseid' => $courseid, 'download' => 'excel'];
+if ($period !== '') {
+    $reporte_tp_excelparams['period'] = $period;
 }
 
 // Datos de usuario.
@@ -1869,12 +2186,21 @@ $currentuser = fullname($USER);
                 <?php endforeach; ?>
             </select>
 
+            <?php if ($selected_course && !empty($configured_periods)): ?>
+                <label for="period">Cuatrimestre:</label>
+
+                <select name="period" id="period" onchange="this.form.submit()">
+                    <option value="1" <?php echo ($view_kind === VIEW_KIND_PERIOD && $selected_period_id === 1) ? 'selected' : ''; ?>>Cuatrimestre 1</option>
+                    <option value="2" <?php echo ($view_kind === VIEW_KIND_PERIOD && $selected_period_id === 2) ? 'selected' : ''; ?>>Cuatrimestre 2</option>
+                    <?php if ($has_unassigned_reportable || $view_kind === VIEW_KIND_UNASSIGNED): ?>
+                        <option value="u" <?php echo ($view_kind === VIEW_KIND_UNASSIGNED) ? 'selected' : ''; ?>>Sin cuatrimestre</option>
+                    <?php endif; ?>
+                </select>
+            <?php endif; ?>
+
             <?php if ($selected_course && $canviewallgrades): ?>
                 <a class="btn btn-success"
-                   href="<?php echo (new moodle_url('/reportes/reporteTPporCurso.php', [
-                       'courseid' => $courseid,
-                       'download' => 'excel'
-                   ]))->out(false); ?>">
+                   href="<?php echo (new moodle_url('/reportes/reporteTPporCurso.php', $reporte_tp_excelparams))->out(false); ?>">
                     Exportar a Excel
                 </a>
             <?php endif; ?>
@@ -1942,9 +2268,19 @@ $currentuser = fullname($USER);
 
     <?php elseif ($selected_course && empty($forums)): ?>
 
-        <div class="empty-message">
-            El curso seleccionado no tiene foros cuyo nombre empiece con <strong>TP-</strong>.
-        </div>
+        <?php if ($view_kind === VIEW_KIND_UNASSIGNED): ?>
+            <div class="empty-message">
+                No hay actividades TP sin cuatrimestre.
+            </div>
+        <?php elseif ($view_kind === VIEW_KIND_PERIOD): ?>
+            <div class="empty-message">
+                No hay actividades TP en el cuatrimestre seleccionado.
+            </div>
+        <?php else: ?>
+            <div class="empty-message">
+                El curso seleccionado no tiene foros cuyo nombre empiece con <strong>TP-</strong>.
+            </div>
+        <?php endif; ?>
 
     <?php elseif ($selected_course): ?>
 
@@ -1958,9 +2294,8 @@ $currentuser = fullname($USER);
                         <?php foreach ($forums as $forum): ?>
                             <th><?php echo s($forum->name); ?></th>
                         <?php endforeach; ?>
-                        <?php if ($periodmodelsupported): ?>
-                            <th>Cuatrimestre 1</th>
-                            <th>Cuatrimestre 2</th>
+                        <?php if ($period_grade_view_active): ?>
+                            <th>Cuatrimestre <?php echo (int)$selected_period_id; ?></th>
                         <?php endif; ?>
                     </tr>
                     </thead>
@@ -2014,6 +2349,7 @@ $currentuser = fullname($USER);
                                             <input type="hidden" name="forumid" value="<?php echo (int)$forum->id; ?>">
                                             <input type="hidden" name="userid" value="<?php echo (int)$data['userid']; ?>">
                                             <input type="hidden" name="expected_previous_grade" value="<?php echo s($gradevalue); ?>">
+                                            <input type="hidden" name="period" value="<?php echo s($period); ?>">
 
                                             <input type="number"
                                                    class="grade-input"
@@ -2040,49 +2376,44 @@ $currentuser = fullname($USER);
                                 </td>
                             <?php endforeach; ?>
 
-                            <?php if ($periodmodelsupported): ?>
-                            <?php foreach ([1, 2] as $period): ?>
+                            <?php if ($period_grade_view_active): ?>
                                 <?php
-                                    $pinfo = $periodgrades[$period][$data['userid']] ?? null;
-                                    $periodtotal = (int)($pinfo['total'] ?? 0);
-                                    $perioddelivered = (int)($pinfo['delivered'] ?? 0);
-
-                                    // Valor mostrado (estudiante, solo lectura): nota persistida (manual) si existe, si no la calculada.
-                                    $computedperiodgrade = (int)($pinfo['grade'] ?? 0);
-                                    $savedperiodgrade = $savedperiodgrades[$period][$data['userid']] ?? null;
+                                    $pinfo = $periodgrades[$data['userid']] ?? null;
+                                    $savedperiodgrade = $savedperiodgrades[$selected_period_id][$data['userid']] ?? null;
                                     $hasoverride = ($savedperiodgrade !== null && is_numeric($savedperiodgrade));
-                                    $periodgrade = $hasoverride ? (int)$savedperiodgrade : $computedperiodgrade;
 
-                                    // En edición (docente): el input solo se precarga con el override persistido;
-                                    // la nota calculada se muestra como placeholder (sugerencia de auto-nota).
+                                    // Teacher: input prefilled with the saved manual grade; the
+                                    // advisory suggestion is only ever a placeholder (never
+                                    // persisted, never shown to students).
+                                    $suggestion = ($periodsuggestionready && isset($pinfo['grade'])) ? (int)$pinfo['grade'] : null;
                                     $periodinputvalue = $hasoverride ? (int)$savedperiodgrade : '';
-                                    $periodplaceholder = (string)$computedperiodgrade;
                                 ?>
                                 <td class="period-grade-cell">
                                     <?php if ($caneditperiodgrade): ?>
-                                        <?php if ($periodtotal > 0): ?>
-                                            <input type="number"
-                                                   class="period-grade-input"
-                                                   form="periodgrade-form"
-                                                   name="periodgrade[<?php echo (int)$period; ?>][<?php echo (int)$data['userid']; ?>]"
-                                                   min="0"
-                                                   max="10"
-                                                   step="1"
-                                                   inputmode="numeric"
-                                                   pattern="[0-9]*"
-                                                   placeholder="<?php echo s($periodplaceholder); ?>"
-                                                   value="<?php echo s((string)$periodinputvalue); ?>">
-                                            <span class="period-grade-meta">(<?php echo $perioddelivered; ?>/<?php echo $periodtotal; ?>)</span>
+                                        <input type="number"
+                                               class="period-grade-input"
+                                               form="periodgrade-form"
+                                               name="periodgrade[<?php echo (int)$selected_period_id; ?>][<?php echo (int)$data['userid']; ?>]"
+                                               min="0"
+                                               max="10"
+                                               step="1"
+                                               inputmode="numeric"
+                                               pattern="[0-9]*"
+                                               <?php if ($suggestion !== null): ?>placeholder="<?php echo s((string)$suggestion); ?>"<?php endif; ?>
+                                               value="<?php echo s((string)$periodinputvalue); ?>">
+                                        <?php if ($suggestion !== null && isset($pinfo['delivered'])): ?>
+                                            <span class="period-grade-meta">(<?php echo (int)$pinfo['delivered']; ?>/<?php echo (int)$pinfo['total']; ?>)</span>
+                                        <?php elseif ($periodsuggestionwarning): ?>
+                                            <span class="period-grade-meta">Nota sugerida: — · Configuración incompleta</span>
                                         <?php else: ?>
-                                            <span class="period-grade-empty">—</span>
+                                            <span class="period-grade-meta">Nota sugerida: —</span>
                                         <?php endif; ?>
                                     <?php else: ?>
                                         <div class="period-grade-readonly">
-                                            <?php echo ($periodtotal > 0) ? ($periodgrade . ' / 10') : '—'; ?>
+                                            <?php echo $hasoverride ? ((int)$savedperiodgrade . ' / 10') : '—'; ?>
                                         </div>
                                     <?php endif; ?>
                                 </td>
-                            <?php endforeach; ?>
                             <?php endif; ?>
                         </tr>
                     <?php endforeach; ?>
@@ -2091,13 +2422,14 @@ $currentuser = fullname($USER);
             </div>
         </section>
 
-        <?php if ($caneditperiodgrade): ?>
+        <?php if ($period_grade_view_active && $caneditperiodgrade): ?>
             <form id="periodgrade-form"
                   method="post"
                   action="<?php echo (new moodle_url('/reportes/reporteTPporCurso.php'))->out(false); ?>">
                 <input type="hidden" name="sesskey" value="<?php echo sesskey(); ?>">
                 <input type="hidden" name="action" value="saveperiodgrade">
                 <input type="hidden" name="courseid" value="<?php echo (int)$courseid; ?>">
+                <input type="hidden" name="period" value="<?php echo (int)$selected_period_id; ?>">
 
                 <button type="submit" class="btn btn-success">Guardar notas del período</button>
             </form>
