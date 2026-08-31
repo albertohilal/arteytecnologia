@@ -2631,3 +2631,95 @@ GATE_PRODUCTION_PRECHECK   = AWAITING_AUTHORIZATION
 GATE_PRODUCTION_DEPLOYMENT = AWAITING_AUTHORIZATION
 ```
 
+## MIGRATOR_DBNAME_RECTIFICATION — VERIFIED AWAITING GIT CHECKPOINT — 2026-08-31
+
+> Esta sección es el estado autoritativo VIGENTE para la SUBUNIT
+> `MIGRATOR_DBNAME_RECTIFICATION`. Las secciones anteriores se conservan como evidencia
+> histórica; este bloque documenta el estado VERIFICADO de la rectificación del migrador,
+> su nuevo contrato CLI y la preservación de invariantes.
+
+```text
+SUBUNIT                        = MIGRATOR_DBNAME_RECTIFICATION
+ENVIRONMENT                    = LOCAL_ONLY
+GATE_MIGRATOR_IMPLEMENTATION   = VERIFIED_SUCCESS
+IMPLEMENTATION_VERIFICATION_RESULT = PASS
+BASELINE_GIT_HEAD              = 26429fe4a9de9a562425c8c64acbe26f3b268410
+BASELINE_GIT_COMMIT            = docs: reconcile Moodle deployment handoff state
+BASELINE_TRACEABILITY          = PASS (67d492f es ancestro directo de 26429fe; un único commit documental intermedio)
+
+=== CAMBIO DE CÓDIGO ===
+SOURCE_FILE                    = moodle/local/tpperiods/cli/migrate_period_metadata_2026.php
+FILES_CHANGED_BY_IMPLEMENTATION = SOLO ese archivo
+SOURCE_DIFF                    = 1 file · 21 inserciones · 7 borrados (mínimo / quirúrgico)
+CHANGE                         = eliminar MIGRATOR_EXPECTED_DBNAME hardcodeado y reemplazar por
+                                 --expected-dbname=<dbname> obligatorio (--check y --execute)
+
+=== NUEVO CONTRATO CLI ===
+CHECK   = php migrate_period_metadata_2026.php --check --expected-dbname=<dbname>
+EXECUTE = php migrate_period_metadata_2026.php --execute --expected-dbname=<dbname>
+          --backup-path=<file> --backup-sha256=<hex>
+PRODUCCION_FUTURA = --expected-dbname=iunaorg_arteytecnologia (sintaxis documentada; NO ejecutado)
+
+=== SEMANTICA FAIL-CLOSED ===
+EXPECTED_DBNAME_REQUIRED_FOR_CHECK   = YES
+EXPECTED_DBNAME_REQUIRED_FOR_EXECUTE = YES
+AUSENTE/VACIO        → USAGE_ERROR exit 2
+DBNOME_INCORRECTO    → P03 FAIL exit 3
+ARGUMENTO_DESCONOCIDO → USAGE_ERROR exit 2
+EXECUTE_SIN_BACKUP   → BACKUP_FAILURE exit 7
+(NO hay fallback automático a $CFG->dbname; NO hay inferencia de entorno;
+ la sintaxis vieja sin --expected-dbname falla cerrado intencionalmente)
+
+=== P03 ===
+P03 compara $CFG->dbname contra $opts['expected-dbname']. Sin fallback. Sin hardcode de producción.
+Sin salida de dbuser/dbpass/token/key (solo dbname).
+
+=== RESULTADOS DE VERIFICACIÓN LOCAL (Docker, solo lectura) ===
+TEST_1 PASS exit 2 (--check sin --expected-dbname → fail closed, sin write)
+TEST_2 PASS exit 3 (--expected-dbname incorrecto → P03 FAIL, sin write)
+TEST_3 PASS exit 0 (--expected-dbname=moodle_prod_20260829 → P03 PASS, DRY_RUN_WRITES=0)
+TEST_4 PASS exit 2 (argumento desconocido → USAGE_ERROR)
+TEST_5 PASS exit 7 (--execute sin backup → guard, DB_WRITE=NO)
+TEST_6 PASS DRY_RUN_WRITES=0
+TEST_7 PASS MAPPED=63 · UNASSIGNED=12 · STATUS=6 (congelados intactos)
+TEST_8 PASS invariantes PRE==POST (7 tablas)
+
+=== INVARIANTES DB (PRE == POST) ===
+grade_items              = 109 → 109
+grade_grades             = 1687 → 1687
+forum_grades             = 584 → 584
+forum                    = 216 → 216
+course_modules           = 314 → 314
+local_tpperiods_cmperiod = 63 → 63
+local_tpperiods_period   = 6 → 6
+DATABASE_CHANGED = NO · GRADEBOOK_CHANGED = NO
+
+=== VERIFICACIÓN ESTÁTICA ===
+PHP_LINT_RESULT              = PASS (No syntax errors)
+OLD_CONSTANT_REFERENCE_COUNT = 0
+EXPECTED_DBNAME_ARGUMENT_IMPLEMENTED = YES
+UNKNOWN_ARGUMENT_FAIL_CLOSED_PRESERVED = YES
+BACKUP_GUARD_PRESERVED       = YES
+NEW_MIGRATOR_SHA256          = 67299c4916418edcc5ab39b860e8b879e4898231cefd8bffea7748286904f4dc
+MIGRATOR_SIZE                = 39427 bytes
+
+=== WARNING NO BLOQUEANTE ===
+SOFT_NAME_DRIFT_COUNT = 1 (PRE-EXISTENTE, ESPERADO, NO BLOQUEANTE;
+  no afecta period membership / hard identity / migration safety / DB invariants)
+
+=== NO VERIFICADO POR DISEÑO ===
+VALID_WRITE_PATH_EXECUTE     = NOT_EXERCISED (prohibido en verificación local)
+PRODUCTION_DBNAME_RUNTIME_MATCH = NOT_VERIFIED_IN_THIS_SUBUNIT (fuera de alcance de esta autorización)
+
+=== ESTADO FINAL ===
+DATABASE_CHANGED = NO · GRADEBOOK_CHANGED = NO · DOCKER_CHANGED = NO · MOODLEDATA_CHANGED = NO
+PRODUCTION_IMPACT = NONE
+IMPORTANT_CHANGE_STATUS = AWAITING_GIT_CHECKPOINT
+FINAL_CLOSED_SUCCESS = NO
+
+GATE_MIGRATOR_IMPLEMENTATION = VERIFIED_SUCCESS
+GATE_DATABASE_CHANGE         = AWAITING_AUTHORIZATION
+GATE_PRODUCTION_DEPLOYMENT   = AWAITING_AUTHORIZATION
+NEXT_SDD_GATE                = GIT_STAGING_AUTHORIZATION
+```
+

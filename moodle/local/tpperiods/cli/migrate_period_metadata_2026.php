@@ -59,7 +59,6 @@ define('MIGRATOR_EXIT_VERIFICATION_FAILURE', 6);
 define('MIGRATOR_EXIT_BACKUP_FAILURE', 7);
 
 // Environment expectations (frozen).
-define('MIGRATOR_EXPECTED_DBNAME', 'moodle_prod_20260829');
 define('MIGRATOR_EXPECTED_PLUGIN_VERSION', 2026082900);
 
 // Period status domain (mirrors lib.php, self-contained for the CLI).
@@ -185,8 +184,8 @@ function migrator_out($key, $value) {
  * Print usage and fail closed.
  */
 function migrator_usage() {
-    fwrite(STDERR, "Usage: php migrate_period_metadata_2026.php --check | "
-        . "--execute --backup-path=<file> --backup-sha256=<hex> | --help\n");
+    fwrite(STDERR, "Usage: php migrate_period_metadata_2026.php --check --expected-dbname=<dbname> | "
+        . "--execute --expected-dbname=<dbname> --backup-path=<file> --backup-sha256=<hex> | --help\n");
     exit(MIGRATOR_EXIT_USAGE_ERROR);
 }
 
@@ -197,11 +196,12 @@ function migrator_print_help() {
     cli_writeln('TP period metadata migrator (2026) — local_tpperiods');
     cli_writeln('');
     cli_writeln('Usage:');
-    cli_writeln('  php migrate_period_metadata_2026.php --check');
-    cli_writeln('  php migrate_period_metadata_2026.php --execute --backup-path=<file> --backup-sha256=<hex>');
+    cli_writeln('  php migrate_period_metadata_2026.php --check --expected-dbname=<dbname>');
+    cli_writeln('  php migrate_period_metadata_2026.php --execute --expected-dbname=<dbname> --backup-path=<file> --backup-sha256=<hex>');
     cli_writeln('  php migrate_period_metadata_2026.php --help');
     cli_writeln('');
     cli_writeln('Exactly one of --help/--check/--execute is required (zero or more than one fails closed, exit 2).');
+    cli_writeln('--expected-dbname=<dbname> is required for --check and --execute.');
     cli_writeln('--backup-path/--backup-sha256 are valid only with --execute.');
 }
 
@@ -218,6 +218,7 @@ function migrator_parse_args(array $argv) {
         'help' => false,
         'backup-path' => null,
         'backup-sha256' => null,
+        'expected-dbname' => null,
     );
 
     foreach ($argv as $i => $arg) {
@@ -242,6 +243,10 @@ function migrator_parse_args(array $argv) {
         }
         if (strpos($arg, '--backup-sha256=') === 0) {
             $opts['backup-sha256'] = substr($arg, strlen('--backup-sha256='));
+            continue;
+        }
+        if (strpos($arg, '--expected-dbname=') === 0) {
+            $opts['expected-dbname'] = substr($arg, strlen('--expected-dbname='));
             continue;
         }
         fwrite(STDERR, "Unknown argument: $arg\n");
@@ -280,6 +285,14 @@ function migrator_resolve_mode(array $opts) {
     if ($hasbackupargs && $mode !== 'execute') {
         fwrite(STDERR, "Error: --backup-path/--backup-sha256 are only valid with --execute.\n");
         migrator_usage();
+    }
+
+    if ($mode !== 'help') {
+        $dbname = isset($opts['expected-dbname']) ? trim($opts['expected-dbname']) : '';
+        if ($dbname === '') {
+            fwrite(STDERR, "Error: --expected-dbname=<dbname> is required for --check and --execute.\n");
+            migrator_usage();
+        }
     }
 
     return $mode;
@@ -718,8 +731,9 @@ function migrator_run_prechecks($mode, array $opts, $forummoduleid) {
     if (empty($CFG->prefix) || $CFG->prefix !== 'mdl_') {
         migrator_precheck_fail('P03', 'unexpected db prefix');
     }
-    if (empty($CFG->dbname) || $CFG->dbname !== MIGRATOR_EXPECTED_DBNAME) {
-        migrator_precheck_fail('P03', 'unexpected dbname (expected ' . MIGRATOR_EXPECTED_DBNAME . ')');
+    $expecteddbname = isset($opts['expected-dbname']) ? trim($opts['expected-dbname']) : '';
+    if (empty($CFG->dbname) || $CFG->dbname !== $expecteddbname) {
+        migrator_precheck_fail('P03', 'unexpected dbname (expected ' . $expecteddbname . ', got ' . $CFG->dbname . ')');
     }
 
     // P04: plugin installed with expected version.
