@@ -2723,3 +2723,141 @@ GATE_PRODUCTION_DEPLOYMENT   = AWAITING_AUTHORIZATION
 NEXT_SDD_GATE                = GIT_STAGING_AUTHORIZATION
 ```
 
+---
+
+## UNIT_PRODUCTION_DEPLOYMENT_TPPERIOD_REPORT — Functional deployment verified (closure pending Git checkpoint)
+
+*(Appended 2026-09-02 — SDD closure implementation. Read-only discovery + append-only documentation.)*
+
+```text
+STATUS                     = FUNCTIONAL_DEPLOYMENT_VERIFIED / CLOSURE_PENDING_GIT_CHECKPOINT
+UNIT                       = UNIT_PRODUCTION_DEPLOYMENT_TPPERIOD_REPORT
+MODE                       = SDD (strict)
+```
+
+### Production runtime
+
+```text
+MOODLE_VERSION             = 3.9.1+ (Build 20200814)
+PHP_VERSION                = 7.4.33 (CLI /opt/alt/php74/usr/bin/php)
+DB_SERVER                  = MariaDB 10.11.18-MariaDB-cll-lve-log
+```
+
+### DB driver rectification (T7)
+
+```text
+CONFIG_DBTYPE_PRE          = mysqli
+CONFIG_DBTYPE_POST         = mariadb
+CONFIG_DBLIBRARY           = native
+DB_CLASS                   = mariadb_native_moodle_database
+DB_VENDOR                  = mariadb
+CONFIG_SHA256_POST         = db7a0acdc1b5ad35d7e06b22ac66cb19adbe4262cbe74dfb97c5026a9967a8f0
+```
+
+### Plugin
+
+```text
+PLUGIN                     = local_tpperiods
+VERSION                    = 2026082900
+```
+
+### Schema (+2 tables)
+
+```text
+mdl_local_tpperiods_cmperiod
+mdl_local_tpperiods_period
+```
+
+### Metadata (T8 OPERATION_C)
+
+```text
+CMPERIOD_ROWS              = 63
+PERIOD_ROWS                = 6
+C15                        = P1=9 P2=19
+C19                        = P1=9 P2=7
+C20                        = P1=14 P2=5
+P1 status                  = CLOSED_FOR_PLANNING
+P2 status                  = OPEN
+UNASSIGNED                 = 12 explicit negative targets (0 have mappings)
+```
+
+### Final report (T9 OPERATION_D)
+
+```text
+REPORT_PATH                = reportes/reporteTPporCurso.php
+REPORT_SHA256              = 6c41429ae1774bedd73ec53e13be5f2bb4ed0c5933981cae152ec945e52af1d9
+REPORT_SIZE_BYTES          = 97287
+```
+
+### Backups (preserved — paths/hashes only, no secrets)
+
+```text
+DB_BACKUP_PATH             = /home/iunaorg/backups/tpperiods_precheck/arteytecnologia_20260901_203412.sql.gz
+DB_BACKUP_SHA256           = 9148063eb05f3dd921361e9be6253f2424bd14f723ac4799857c0445f8f7f750
+REPORT_BACKUP_PATH         = /home/iunaorg/backups/tpperiods_precheck/reporteTPporCurso_PRE_DEPLOY_20260901_204641.php
+REPORT_BACKUP_SHA256       = d1e87962842082a3abf204f00ec7b3a3daf0c913b251481926ad9aa5eb33eafb
+CONFIG_BACKUP_PATH         = /home/iunaorg/backups/tpperiods_precheck/config.php.pre-dbtype-rectify_20260901_215305
+CONFIG_BACKUP_SHA256       = 40171a1ad94bea6ac3a86cd7bc158a851f83ca2dca0711f1e74b8c4066491996
+```
+
+### T12 authenticated web E2E
+
+```text
+AUTHENTICATED_WEB_E2E      = PASS
+TEACHER_MATRIX             = C15 P1/P2/U PASS · C19 P1/P2/U PASS · C20 P1/P2/U PASS
+STUDENT_ROLE               = PASS
+ACADEMIC_FINGERPRINTS      = 12/12 PRE=POST
+ACADEMIC_WRITES_OBSERVED   = 0
+```
+
+### Academic invariants preserved
+
+```text
+grade_items                = 109
+grade_grades               = 1687
+forum_grades               = 586
+forum                      = 216
+course_modules             = 314
+forum_discussions          = 2331
+forum_posts                = 2746
+```
+
+### Known factual baseline (course 15 cmid 264)
+
+```text
+cmid264                    = period 2
+forum173                   = grade_forum 0
+grade_item count           = 1 (preexistente; NO usar la afirmación obsoleta "sin grade item")
+```
+
+### Maintenance / operational
+
+```text
+MAINTENANCE                = OFF
+PUBLIC_HTTP_STATUS         = 200
+```
+
+### Warnings (deferred, NOT silently fixed)
+
+```text
+PRODUCTION_CRON_STALE      = YES
+ADHOC_STALE_PENDING        = 9
+SOFT_NAME_DRIFT_COUNT      = 1
+```
+
+### Security boundary
+
+```text
+FUNCTIONAL_DEPLOYMENT_SECURITY_STATUS = DEPLOYMENT_FUNCTIONAL_COMPLETE
+SECURITY_INCIDENT_STATUS              = OPEN_SEPARATE_UNIT
+```
+
+Este despliegue NO remedia ni cierra el incidente de seguridad preexistente del hosting/Moodle.
+
+### Git state (before closure checkpoint)
+
+```text
+Deployed code already committed/pushed at HEAD 0a5bd2363d994779ec9d5e676f6d5ba0832c624a.
+Only this closure documentation remains to checkpoint (docs-only commit, pending authorization).
+```
+
