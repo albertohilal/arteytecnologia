@@ -113,11 +113,13 @@ foreach ($periods as $periodvalue) {
         ? get_string('period1', 'local_tpperiods')
         : get_string('period2', 'local_tpperiods');
 
-    $button = $OUTPUT->single_button($url, $actionlabel, 'post', [
-        'sesskey' => sesskey(),
-        'action' => $actionname,
-        'period' => $periodvalue,
+    $actionurl = new moodle_url('/local/tpperiods/manage.php', [
+        'courseid' => $courseid,
+        'action'   => $actionname,
+        'period'   => $periodvalue,
     ]);
+
+    $button = $OUTPUT->single_button($actionurl, $actionlabel, 'post');
 
     $table->data[] = [$periodlabel, $statuslabel, $button];
 }

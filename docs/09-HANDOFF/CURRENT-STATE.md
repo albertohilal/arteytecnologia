@@ -3,20 +3,19 @@
 ```text
 PROJECT              = arteytecnologia.com.ar (Moodle local)
 SDD                  = SDD_AGENTS_SKILLS_GOVERNANCE
-PHASE                = CLOSURE
-UNIT                 = governance-framework
-GATE                 = GATE_AGENTS_SKILLS_IMPLEMENTATION = CONSUMED
-SDD_STATUS           = COMPLETED
+PHASE                = CLOSURE (pending Git checkpoint)
+UNIT                 = RECTIFY_TPPERIODS_MANAGEMENT_ACTIONS
+GATE                 = GATE_LOCAL_FUNCTIONAL_TEST = CLOSED_SUCCESS
+SDD_STATUS           = IMPLEMENTED_VERIFIED
 VERIFICATION         = CLOSED_SUCCESS
 BRANCH               = feature/copia-local-moodle
-HEAD                 = 809ba63e2334528901b44163e98ea8cd9a2b0afb
-WORKTREE             = DIRTY (pre-existing): modified moodle/reportes/reporteTPporCurso.php;
-                       untracked .atl/, AUXILIAR/
-LAST_VERIFIED_STATE  = 2026-08-17
-NEXT_ACTION          = none — governance framework verified and closed (2026-08-17)
-NOT_AUTHORIZED       = (none pending for governance framework; GATE consumed)
-RISKS                = native skill loader restart resolved (5 skills visible, scope=project);
-                       security evidence still temporary (unrelated to this SDD)
+HEAD                 = 4c5b8b94fb3b9a8380e51234b4eb89f7da5ce427
+WORKTREE             = DIRTY: modified moodle/local/tpperiods/manage.php;
+                       untracked AUXILIAR/, SDD_VERIFICATION_DELIVERABLE.md
+LAST_VERIFIED_STATE  = 2026-09-03
+NEXT_ACTION          = authorize Git checkpoint (selective commit + push) for manage.php + this doc
+NOT_AUTHORIZED       = GATE_GIT_CHECKPOINT, GATE_PRODUCTION_DEPLOYMENT (AWAITING_AUTHORIZATION)
+RISKS                = timemodified advanced on (15,P1)/(15,P2) — benign audit metadata, intentionally NOT restored
 ```
 
 ## Governance framework — verification (closed 2026-08-17)
@@ -2859,5 +2858,55 @@ Este despliegue NO remedia ni cierra el incidente de seguridad preexistente del 
 ```text
 Deployed code already committed/pushed at HEAD 0a5bd2363d994779ec9d5e676f6d5ba0832c624a.
 Only this closure documentation remains to checkpoint (docs-only commit, pending authorization).
+```
+
+## RECTIFY_TPPERIODS_MANAGEMENT_ACTIONS — functional verification (2026-09-03)
+
+```text
+UNIT                          = RECTIFY_TPPERIODS_MANAGEMENT_ACTIONS
+STATUS                        = IMPLEMENTED_VERIFIED
+GATE_LOCAL_FUNCTIONAL_TEST    = CLOSED_SUCCESS
+GATE_GIT_CHECKPOINT           = AWAITING_AUTHORIZATION
+GATE_PRODUCTION_DEPLOYMENT    = AWAITING_AUTHORIZATION
+
+ROOT_CAUSE =
+  action/period were passed as the $options argument of $OUTPUT->single_button(),
+  turning them into HTML button attributes instead of POST parameters, so the
+  handler never received them and the page reloaded without changing state.
+
+FILE_CHANGED =
+  moodle/local/tpperiods/manage.php
+
+IMPLEMENTATION =
+  action/period moved into a moodle_url built per row; sesskey is handled
+  automatically by single_button() POST. No Moodle core, lang, schema, DB,
+  grades, or local_tpperiods_cmperiod changes.
+
+SHA256_PRE  = b86bcd9b6a79cc73ed5c340b7516a6c456f9754d6c85ce1f94cbaf3f9bd23408
+SHA256_POST = a9f127e9966ecb84ae851cf5facfb67f10ec09ea385e27202f8170cba8586954
+
+BACKUP       = AUXILIAR/BACKUPS/pre-rectify-tpperiods-manage_20260903_093733.sql.gz
+BACKUP_SHA256 = c3522e0ff761e55970a82a7e3d6aba1378f1c420559cbeb83095628625767533
+
+TESTS =
+  Reopen (course15 P1, 1→0→restore 1)  PASS
+  Close  (course15 P2, 0→1→restore 0)  PASS
+  Open   (course2  P1, INSERT→DELETE)  PASS
+
+DATABASE_CHANGED                 = NO  (business state unchanged)
+DATABASE_BUSINESS_STATE_RESTORED = YES
+DATABASE_AUDIT_METADATA_CHANGED  = YES  (timemodified on (15,P1)/(15,P2), benign)
+ACADEMIC_DATA_CHANGED            = NO
+ACTIVITY_PERIOD_MAPPING_CHANGED  = NO
+DATABASE_SCHEMA_CHANGED          = NO
+DOCKER_CHANGED                   = NO
+PRODUCTION                       = UNTOUCHED
+
+PERIOD_STATUS_RESTORED_TO_PRETEST   = YES
+ROW_SET_RESTORED_TO_PRETEST         = YES
+BUSINESS_STATE_RESTORED_TO_PRETEST  = YES
+TPPERIODS_PERIOD_FULL_PRE_EQUALS_POST = NO
+  (timemodified advanced on the two exercised rows via update_record(); NOT restored,
+   intentionally — no further DB writes)
 ```
 
