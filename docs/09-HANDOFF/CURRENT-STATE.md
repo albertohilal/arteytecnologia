@@ -2910,3 +2910,269 @@ TPPERIODS_PERIOD_FULL_PRE_EQUALS_POST = NO
    intentionally — no further DB writes)
 ```
 
+## UNIT_PRODUCTION_DEPLOYMENT_TPPERIODS_MANAGE_FIX — final verified state (2026-09-03)
+
+```text
+UNIT = UNIT_PRODUCTION_DEPLOYMENT_TPPERIODS_MANAGE_FIX
+
+--------------------------------------------------
+ROOT CAUSE
+--------------------------------------------------
+
+local/tpperiods/manage.php generaba los botones Open / Close / Reopen mediante
+single_button() pasando action y period en el cuarto argumento.
+
+En Moodle 3.9 ese cuarto argumento corresponde a opciones/atributos del botón y
+NO a parámetros POST.
+
+Por ello action y period no llegaban al handler y las acciones no producían cambio.
+
+Corrección:
+
+action y period fueron incorporados como parámetros del moodle_url pasado a
+single_button().
+
+--------------------------------------------------
+LOCAL FIX
+--------------------------------------------------
+
+Archivo:
+
+moodle/local/tpperiods/manage.php
+
+PRE SHA256:
+b86bcd9b6a79cc73ed5c340b7516a6c456f9754d6c85ce1f94cbaf3f9bd23408
+
+POST SHA256:
+a9f127e9966ecb84ae851cf5facfb67f10ec09ea385e27202f8170cba8586954
+
+PHP lint:
+PASS
+
+Commit existente del fix:
+
+1ff26aae28d8fee1726ad9f666252d8619ffcec9
+
+message:
+fix: repair TP period management actions
+
+Ese commit ya fue pusheado previamente y verificado.
+
+--------------------------------------------------
+PRODUCTION DEPLOYMENT
+--------------------------------------------------
+
+Production Moodle root:
+
+/home/iunaorg/public_html/arteytecnologia.com.ar
+
+Production Moodle:
+3.9.1+ Build 20200814
+
+PHP CLI:
+7.4.33
+
+Archivo desplegado:
+
+local/tpperiods/manage.php
+
+REMOTE FINAL SHA256:
+
+a9f127e9966ecb84ae851cf5facfb67f10ec09ea385e27202f8170cba8586954
+
+PHP lint production:
+PASS
+
+Backup PRE preservado:
+
+/home/iunaorg/sdd_backups/manage_php_PRE_20260903_144223.php
+
+No eliminar.
+
+--------------------------------------------------
+MAINTENANCE
+--------------------------------------------------
+
+Deployment realizado inicialmente con CLI hard maintenance.
+
+Se realizó transición controlada a standard maintenance sin ventana de exposición
+pública.
+
+Backup preservado del trigger CLI:
+
+/home/iunaorg/arteytecnologia-data/climaintenance.html.sdd_20260903_154917.bak
+
+SHA256:
+
+cf7b73dc2b76339c1df2603db0f5b5a4a8ed934ddecb7979ad5c5e8ae2d4e3ad
+
+Estado final:
+
+maintenance_enabled = 0
+active climaintenance.html = ABSENT
+production maintenance = OFF
+public HTTP = 200
+login = AVAILABLE
+maintenance page = NO
+
+Backup .bak preservado.
+
+--------------------------------------------------
+FUNCTIONAL VERIFICATION
+--------------------------------------------------
+
+courseid=19
+
+Quarter 1:
+estado final = Closed
+status = 1
+
+Quarter 2:
+estado final = Open
+status = 0
+
+Fix manage.php verificado vía Moodle UI:
+
+Quarter 1:
+Closed → Reopen planning → Open
+
+DB:
+status 1→0
+
+Luego estado restaurado:
+
+Open → Close planning → Closed
+
+DB:
+status 0→1
+
+Funcionamiento de botones:
+PASS
+
+--------------------------------------------------
+TARGET ACTIVITY CHANGE
+--------------------------------------------------
+
+cmid=392
+forumid=267
+
+Actividad:
+
+TP-06-1- Pintura de uno de los bocetos
+
+Mapping final:
+
+Quarter 1 → Quarter 2
+
+mdl_local_tpperiods_cmperiod:
+cmid=392
+period final=2
+
+GATE_TARGET_ACTIVITY_PERIOD_CHANGE =
+CLOSED_SUCCESS
+
+--------------------------------------------------
+ACADEMIC INTEGRITY
+--------------------------------------------------
+
+grade item:
+id=99
+
+grade_grades itemid=99:
+
+rows=11
+non-null=1
+finalgrade=9.0
+
+forum_grades forum=267:
+
+rows=1
+grade=9.0
+
+discussions=0
+posts=0
+
+Resultado:
+
+GRADE_DATA_CHANGED=NO
+FORUM_GRADE_DATA_CHANGED=NO
+DISCUSSIONS_CHANGED=NO
+POSTS_CHANGED=NO
+
+Audit metadata legítima:
+
+- local_tpperiods_period.timemodified avanzó
+- local_tpperiods_cmperiod.timemodified avanzó
+- forum.timemodified avanzó por guardado normal de Moodle
+
+NO restaurar dichos timestamps.
+
+--------------------------------------------------
+FINAL GATES
+--------------------------------------------------
+
+GATE_PRODUCTION_DEPLOYMENT =
+CLOSED_SUCCESS
+
+GATE_PRODUCTION_FUNCTIONAL_VERIFICATION =
+CLOSED_SUCCESS
+
+GATE_TARGET_ACTIVITY_PERIOD_CHANGE =
+CLOSED_SUCCESS
+
+GATE_TARGET_P1_RECLOSE =
+CLOSED_SUCCESS
+
+GATE_PRODUCTION_MAINTENANCE_DISABLE =
+CLOSED_SUCCESS
+
+GATE_PRODUCTION_CUTOVER =
+CLOSED_SUCCESS
+
+GATE_DOCUMENT_CURRENT_STATE =
+CLOSED_SUCCESS
+
+GATE_GIT_CHECKPOINT =
+AWAITING_AUTHORIZATION
+
+--------------------------------------------------
+FINAL STATUS
+--------------------------------------------------
+
+ROOT_CAUSE =
+incorrect parameter placement in Moodle single_button(), causing action/period
+POST values to be absent.
+
+FILES_CHANGED =
+production local/tpperiods/manage.php
+local moodle/local/tpperiods/manage.php
+docs/09-HANDOFF/CURRENT-STATE.md (documentation only)
+
+DATABASE_CHANGED =
+YES, controlled:
+- cmid=392 mapping period 1→2
+- course19 period1 1→0→1 during functional verification
+- maintenance_enabled returned to 0
+- expected timemodified metadata
+- NO grade changes
+
+DOCKER_CHANGED =
+NO
+
+VERIFICATION_RESULT =
+PASS end-to-end
+
+GIT_STATUS =
+PENDING FINAL CHECKPOINT
+
+PRODUCTION_IMPACT =
+Fix deployed and verified.
+Target activity now Quarter 2.
+Quarter 1 Closed.
+Quarter 2 Open.
+Grade 9.0 preserved.
+Public site operational HTTP 200.
+
+SECURITY_STATUS =
+No assertion that the separate pending security incident is resolved.
+```
